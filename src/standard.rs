@@ -277,8 +277,7 @@ impl SampleQuantiles for Histogram {
         let mut entries = BTreeMap::new();
 
         for quantile in &sorted {
-            let count =
-                std::cmp::max(1, (quantile.as_f64() * total_count as f64).ceil() as u128);
+            let count = std::cmp::max(1, (quantile.as_f64() * total_count as f64).ceil() as u128);
 
             loop {
                 if partial_sum >= count {
