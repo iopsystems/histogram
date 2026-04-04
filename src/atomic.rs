@@ -170,10 +170,7 @@ mod tests {
         // p99.9 should be 100
         let result = histogram.load().quantile(0.999).unwrap().unwrap();
         assert_eq!(
-            result
-                .get(&Quantile::new(0.999).unwrap())
-                .unwrap()
-                .end(),
+            result.get(&Quantile::new(0.999).unwrap()).unwrap().end(),
             100
         );
 
@@ -198,10 +195,7 @@ mod tests {
             .iter()
             .map(|(q, b)| (q.as_f64(), b.end()))
             .collect();
-        assert_eq!(
-            values,
-            vec![(0.5, 50), (0.9, 90), (0.99, 99), (0.999, 100)]
-        );
+        assert_eq!(values, vec![(0.5, 50), (0.9, 90), (0.99, 99), (0.999, 100)]);
 
         // after adding a new value, p99.9 shifts
         let _ = histogram.increment(1024);
