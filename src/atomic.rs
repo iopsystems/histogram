@@ -101,6 +101,7 @@ mod tests {
     }
 
     #[cfg(target_has_atomic = "64")]
+    #[allow(deprecated)]
     #[test]
     /// Tests that drain properly resets buckets to 0
     fn drain() {
@@ -128,6 +129,7 @@ mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[test]
     // Tests percentiles
     fn percentiles() {
