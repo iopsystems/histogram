@@ -27,13 +27,13 @@ pub struct Quantile(f64);
 impl Quantile {
     /// Create a new `Quantile` from a value in `0.0..=1.0`.
     ///
-    /// Returns [`Error::InvalidPercentile`] if the value is outside the
+    /// Returns [`Error::InvalidQuantile`] if the value is outside the
     /// valid range or is NaN/infinite.
     pub fn new(value: f64) -> Result<Self, Error> {
         if (0.0..=1.0).contains(&value) {
             Ok(Self(value))
         } else {
-            Err(Error::InvalidPercentile)
+            Err(Error::InvalidQuantile)
         }
     }
 
@@ -185,7 +185,7 @@ pub trait SampleQuantiles {
     /// Compute quantiles for the given values.
     ///
     /// Each value in `quantiles` must be in `0.0..=1.0`. Returns
-    /// `Err(Error::InvalidPercentile)` if any value is out of range.
+    /// `Err(Error::InvalidQuantile)` if any value is out of range.
     /// Returns `Ok(None)` if the histogram is empty.
     fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error>;
 
@@ -232,8 +232,8 @@ mod tests {
     #[test]
     fn invalid_quantile_returns_error() {
         let h = Histogram::new(7, 64).unwrap();
-        assert_eq!(h.quantiles(&[1.5]), Err(Error::InvalidPercentile));
-        assert_eq!(h.quantiles(&[-0.1]), Err(Error::InvalidPercentile));
+        assert_eq!(h.quantiles(&[1.5]), Err(Error::InvalidQuantile));
+        assert_eq!(h.quantiles(&[-0.1]), Err(Error::InvalidQuantile));
     }
 
     #[test]

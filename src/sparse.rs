@@ -295,13 +295,19 @@ impl SparseHistogram {
     ///
     /// The results will be sorted by the percentile.
     #[deprecated(since = "1.1.0", note = "Use the SampleQuantiles trait")]
+    #[allow(deprecated)]
     pub fn percentiles(&self, percentiles: &[f64]) -> Result<Option<Vec<(f64, Bucket)>>, Error> {
-        Ok(SampleQuantiles::quantiles(self, percentiles)?.map(|qr| {
-            qr.entries()
-                .iter()
-                .map(|(q, b)| (q.as_f64(), b.clone()))
-                .collect()
-        }))
+        Ok(SampleQuantiles::quantiles(self, percentiles)
+            .map_err(|e| match e {
+                Error::InvalidQuantile => Error::InvalidPercentile,
+                other => other,
+            })?
+            .map(|qr| {
+                qr.entries()
+                    .iter()
+                    .map(|(q, b)| (q.as_f64(), b.clone()))
+                    .collect()
+            }))
     }
 
     /// Return a single percentile from this histogram.
@@ -380,7 +386,7 @@ impl SampleQuantiles for SparseHistogram {
         // validate all the quantiles
         for q in quantiles {
             if !(0.0..=1.0).contains(q) {
-                return Err(Error::InvalidPercentile);
+                return Err(Error::InvalidQuantile);
             }
         }
 
