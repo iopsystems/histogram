@@ -108,103 +108,104 @@ mod tests {
         for i in 0..=100 {
             let _ = histogram.increment(i);
         }
-        let percentiles = histogram.drain();
+        let snapshot = histogram.drain();
+        let result = snapshot.quantile(0.50).unwrap().unwrap();
         assert_eq!(
-            percentiles.percentile(0.50),
-            Ok(Some(Bucket {
+            result.get(&Quantile::new(0.50).unwrap()),
+            Some(&Bucket {
                 count: 1,
                 range: 50..=50,
-            }))
+            })
         );
         histogram.increment(1000).unwrap();
-        // after another load the map is empty
-        let percentiles = histogram.drain();
+        // after another drain the previous data is gone
+        let snapshot = histogram.drain();
+        let result = snapshot.quantile(0.50).unwrap().unwrap();
         assert_eq!(
-            percentiles.percentile(0.50),
-            Ok(Some(Bucket {
+            result.get(&Quantile::new(0.50).unwrap()),
+            Some(&Bucket {
                 count: 1,
                 range: 1000..=1003,
-            }))
+            })
         );
     }
 
     #[test]
-    // Tests percentiles
-    fn percentiles() {
+    fn quantiles() {
         let histogram = AtomicHistogram::new(7, 64).unwrap();
-        let percentiles = [0.25, 0.50, 0.75, 0.90, 0.99];
+        let qs = [0.25, 0.50, 0.75, 0.90, 0.99];
 
         // check empty
-        assert_eq!(histogram.load().percentiles(&percentiles), Ok(None));
+        assert_eq!(histogram.load().quantiles(&qs).unwrap(), None);
+        assert_eq!(histogram.load().quantile(0.5).unwrap(), None);
 
-        for percentile in percentiles {
-            assert_eq!(histogram.load().percentile(percentile), Ok(None));
-        }
-
-        // populate and check percentiles
+        // populate and check min/max
         for i in 0..=100 {
             let _ = histogram.increment(i);
+            let result = histogram.load().quantile(0.0).unwrap().unwrap();
             assert_eq!(
-                histogram.load().percentile(0.0),
-                Ok(Some(Bucket {
+                result.get(&Quantile::new(0.0).unwrap()),
+                Some(&Bucket {
                     count: 1,
                     range: 0..=0,
-                }))
+                })
             );
+            let result = histogram.load().quantile(1.0).unwrap().unwrap();
             assert_eq!(
-                histogram.load().percentile(1.0),
-                Ok(Some(Bucket {
+                result.get(&Quantile::new(1.0).unwrap()),
+                Some(&Bucket {
                     count: 1,
                     range: i..=i,
-                }))
+                })
             );
         }
 
-        for percentile in percentiles {
-            assert_eq!(
-                histogram
-                    .load()
-                    .percentile(percentile)
-                    .map(|b| b.unwrap().end()),
-                Ok((percentile * 100.0) as u64)
-            );
+        // check individual quantiles
+        for q in qs {
+            let result = histogram.load().quantile(q).unwrap().unwrap();
+            let bucket = result.get(&Quantile::new(q).unwrap()).unwrap();
+            assert_eq!(bucket.end(), (q * 100.0) as u64);
         }
 
+        // p99.9 should be 100
+        let result = histogram.load().quantile(0.999).unwrap().unwrap();
         assert_eq!(
-            histogram.load().percentile(0.999).map(|b| b.unwrap().end()),
-            Ok(100)
+            result.get(&Quantile::new(0.999).unwrap()).unwrap().end(),
+            100
         );
 
+        // invalid quantiles
         assert_eq!(
-            histogram.load().percentile(-1.0),
-            Err(Error::InvalidPercentile)
+            histogram.load().quantiles(&[-1.0]),
+            Err(Error::InvalidQuantile)
         );
         assert_eq!(
-            histogram.load().percentile(1.01),
-            Err(Error::InvalidPercentile)
+            histogram.load().quantiles(&[1.01]),
+            Err(Error::InvalidQuantile)
         );
 
-        let percentiles: Vec<(f64, u64)> = histogram
+        // multi-quantile query
+        let result = histogram
             .load()
-            .percentiles(&[0.5, 0.9, 0.99, 0.999])
+            .quantiles(&[0.5, 0.9, 0.99, 0.999])
             .unwrap()
-            .unwrap()
+            .unwrap();
+        let values: Vec<(f64, u64)> = result
+            .entries()
             .iter()
-            .map(|(p, b)| (*p, b.end()))
+            .map(|(q, b)| (q.as_f64(), b.end()))
             .collect();
+        assert_eq!(values, vec![(0.5, 50), (0.9, 90), (0.99, 99), (0.999, 100)]);
 
-        assert_eq!(
-            percentiles,
-            vec![(0.5, 50), (0.9, 90), (0.99, 99), (0.999, 100)]
-        );
-
+        // after adding a new value, p99.9 shifts
         let _ = histogram.increment(1024);
+        let result = histogram.load().quantile(0.999).unwrap().unwrap();
         assert_eq!(
-            histogram.load().percentile(0.999),
-            Ok(Some(Bucket {
+            result.get(&Quantile::new(0.999).unwrap()),
+            Some(&Bucket {
                 count: 1,
                 range: 1024..=1031,
-            }))
+            })
         );
     }
 }

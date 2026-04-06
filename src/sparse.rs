@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
 use crate::{Bucket, Config, Error, Histogram};
 
 /// A sparse, columnar representation of a histogram.
@@ -291,69 +294,29 @@ impl SparseHistogram {
     /// example, the 50th percentile (median) can be found using `0.5`.
     ///
     /// The results will be sorted by the percentile.
+    #[deprecated(note = "Use the SampleQuantiles trait")]
+    #[allow(deprecated)]
     pub fn percentiles(&self, percentiles: &[f64]) -> Result<Option<Vec<(f64, Bucket)>>, Error> {
-        // validate all the percentiles
-        for percentile in percentiles {
-            if !(0.0..=1.0).contains(percentile) {
-                return Err(Error::InvalidPercentile);
-            }
-        }
-        // get the total count
-        let total_count: u128 = self.count.iter().map(|v| *v as u128).sum();
-
-        // empty histogram, no percentiles available
-        if total_count == 0 {
-            return Ok(None);
-        }
-
-        // sort the requested percentiles so we can find them in a single pass
-        let mut percentiles = percentiles.to_vec();
-        percentiles.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        let mut idx = 0;
-        let mut partial_sum = self.count[0] as u128;
-
-        let result: Vec<(f64, Bucket)> = percentiles
-            .iter()
-            .filter_map(|percentile| {
-                // For 0.0 percentile (min) we need to report the first bucket
-                // with a non-zero count.
-                let count = std::cmp::max(1, (percentile * total_count as f64).ceil() as u128);
-
-                loop {
-                    // found the matching bucket index for this percentile
-                    if partial_sum >= count {
-                        return Some((
-                            *percentile,
-                            Bucket {
-                                count: self.count[idx],
-                                range: self.config.index_to_range(self.index[idx] as usize),
-                            },
-                        ));
-                    }
-
-                    // check if we have reached the end of the buckets
-                    if idx == (self.index.len() - 1) {
-                        break;
-                    }
-
-                    // otherwise, increment the index, partial sum, and loop
-                    idx += 1;
-                    partial_sum += self.count[idx] as u128;
-                }
-
-                None
-            })
-            .collect();
-
-        Ok(Some(result))
+        Ok(SampleQuantiles::quantiles(self, percentiles)
+            .map_err(|e| match e {
+                Error::InvalidQuantile => Error::InvalidPercentile,
+                other => other,
+            })?
+            .map(|qr| {
+                qr.entries()
+                    .iter()
+                    .map(|(q, b)| (q.as_f64(), b.clone()))
+                    .collect()
+            }))
     }
 
     /// Return a single percentile from this histogram.
     ///
     /// The percentile should be in the inclusive range `0.0..=1.0`. For
     /// example, the 50th percentile (median) can be found using `0.5`.
+    #[deprecated(note = "Use the SampleQuantiles trait")]
     pub fn percentile(&self, percentile: f64) -> Result<Option<Bucket>, Error> {
+        #[allow(deprecated)]
         self.percentiles(&[percentile])
             .map(|v| v.map(|x| x.first().unwrap().1.clone()))
     }
@@ -415,6 +378,76 @@ impl SparseHistogram {
             index: 0,
             histogram: self,
         }
+    }
+}
+
+impl SampleQuantiles for SparseHistogram {
+    fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+        // validate all the quantiles
+        for q in quantiles {
+            if !(0.0..=1.0).contains(q) {
+                return Err(Error::InvalidQuantile);
+            }
+        }
+
+        // get the total count
+        let total_count: u128 = self.count.iter().map(|v| *v as u128).sum();
+
+        // empty histogram, no quantiles available
+        if total_count == 0 {
+            return Ok(None);
+        }
+
+        // sort the requested quantiles so we can find them in a single pass
+        let mut sorted: Vec<Quantile> = quantiles
+            .iter()
+            .map(|&q| Quantile::new(q).unwrap())
+            .collect();
+        sorted.sort();
+        sorted.dedup();
+
+        // min/max are the first and last entries in the sparse vectors
+        let min = Bucket {
+            count: self.count[0],
+            range: self.config.index_to_range(self.index[0] as usize),
+        };
+        let last = self.index.len() - 1;
+        let max = Bucket {
+            count: self.count[last],
+            range: self.config.index_to_range(self.index[last] as usize),
+        };
+
+        // single pass to find all quantile buckets
+        let mut idx = 0;
+        let mut partial_sum = self.count[0] as u128;
+
+        let mut entries = BTreeMap::new();
+
+        for quantile in &sorted {
+            let count = std::cmp::max(1, (quantile.as_f64() * total_count as f64).ceil() as u128);
+
+            loop {
+                if partial_sum >= count {
+                    entries.insert(
+                        *quantile,
+                        Bucket {
+                            count: self.count[idx],
+                            range: self.config.index_to_range(self.index[idx] as usize),
+                        },
+                    );
+                    break;
+                }
+
+                if idx == (self.index.len() - 1) {
+                    break;
+                }
+
+                idx += 1;
+                partial_sum += self.count[idx] as u128;
+            }
+        }
+
+        Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
     }
 }
 
@@ -605,6 +638,7 @@ mod tests {
         assert!(h.index().is_empty());
     }
 
+    #[allow(deprecated)]
     #[test]
     fn percentiles() {
         let mut hstandard = Histogram::new(4, 10).unwrap();
@@ -632,6 +666,7 @@ mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[test]
     // Tests percentile used to find min
     fn min() {

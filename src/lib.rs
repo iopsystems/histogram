@@ -42,6 +42,7 @@ mod atomic;
 mod bucket;
 mod config;
 mod errors;
+mod quantile;
 mod sparse;
 mod standard;
 
@@ -49,5 +50,6 @@ pub use atomic::AtomicHistogram;
 pub use bucket::Bucket;
 pub use config::Config;
 pub use errors::Error;
+pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};
 pub use sparse::SparseHistogram;
 pub use standard::Histogram;
