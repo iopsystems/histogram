@@ -80,7 +80,7 @@ impl Histogram {
     /// example, the 50th percentile (median) can be found using `0.5`.
     ///
     /// The results will be sorted by the percentile.
-    #[deprecated(since = "1.1.0", note = "Use the SampleQuantiles trait")]
+    #[deprecated(note = "Use the SampleQuantiles trait")]
     #[allow(deprecated)]
     pub fn percentiles(&self, percentiles: &[f64]) -> Result<Option<Vec<(f64, Bucket)>>, Error> {
         Ok(SampleQuantiles::quantiles(self, percentiles)
@@ -100,7 +100,7 @@ impl Histogram {
     ///
     /// The percentile should be in the inclusive range `0.0..=1.0`. For
     /// example, the 50th percentile (median) can be found using `0.5`.
-    #[deprecated(since = "1.1.0", note = "Use the SampleQuantiles trait")]
+    #[deprecated(note = "Use the SampleQuantiles trait")]
     pub fn percentile(&self, percentile: f64) -> Result<Option<Bucket>, Error> {
         #[allow(deprecated)]
         self.percentiles(&[percentile])

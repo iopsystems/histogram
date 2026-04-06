@@ -8,7 +8,7 @@ pub enum Error {
     MaxPowerTooHigh,
     #[error("max power is too low, check that grouping_power < max_value_power")]
     MaxPowerTooLow,
-    #[deprecated(since = "1.1.0", note = "Use InvalidQuantile")]
+    #[deprecated(note = "Use InvalidQuantile")]
     #[error("invalid percentile, must be in range 0.0..=1.0")]
     InvalidPercentile,
     #[error("invalid quantile, must be in range 0.0..=1.0")]
