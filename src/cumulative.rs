@@ -242,8 +242,10 @@ impl SampleQuantiles for CumulativeROHistogram {
         // Find bucket for each quantile
         let mut entries = BTreeMap::new();
         for quantile in &sorted {
-            let target =
-                std::cmp::max(1u128, (quantile.as_f64() * total_count as f64).ceil() as u128);
+            let target = std::cmp::max(
+                1u128,
+                (quantile.as_f64() * total_count as f64).ceil() as u128,
+            );
 
             let pos = self.find_quantile_position(target);
 
@@ -416,8 +418,7 @@ mod tests {
     #[test]
     fn from_sparse() {
         let config = Config::new(7, 32).unwrap();
-        let sparse =
-            SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6, 12, 7]).unwrap();
+        let sparse = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6, 12, 7]).unwrap();
 
         let croh = CumulativeROHistogram::from(&sparse);
         assert_eq!(croh.config(), config);
@@ -448,7 +449,11 @@ mod tests {
         assert_eq!(hr.min().range(), cr.min().range());
         assert_eq!(hr.max().range(), cr.max().range());
 
-        for ((hq, sq), cq) in hr.entries().iter().zip(sr.entries().iter()).zip(cr.entries().iter())
+        for ((hq, sq), cq) in hr
+            .entries()
+            .iter()
+            .zip(sr.entries().iter())
+            .zip(cr.entries().iter())
         {
             assert_eq!(hq.0, cq.0);
             assert_eq!(sq.0, cq.0);
@@ -563,8 +568,7 @@ mod tests {
         assert_eq!(croh.bucket_quantile_range(3), None);
 
         // Empty histogram
-        let empty =
-            CumulativeROHistogram::from_parts(config, vec![], vec![]).unwrap();
+        let empty = CumulativeROHistogram::from_parts(config, vec![], vec![]).unwrap();
         assert_eq!(empty.bucket_quantile_range(0), None);
     }
 
@@ -627,8 +631,7 @@ mod tests {
     #[test]
     fn invalid_quantile_returns_error() {
         let config = Config::new(7, 32).unwrap();
-        let croh =
-            CumulativeROHistogram::from_parts(config, vec![1], vec![5]).unwrap();
+        let croh = CumulativeROHistogram::from_parts(config, vec![1], vec![5]).unwrap();
 
         assert_eq!(croh.quantiles(&[1.5]), Err(Error::InvalidQuantile));
         assert_eq!(croh.quantiles(&[-0.1]), Err(Error::InvalidQuantile));
