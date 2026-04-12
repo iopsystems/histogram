@@ -12,6 +12,8 @@
 //!   query percentiles.
 //! - [`SparseHistogram`] — compact representation storing only non-zero
 //!   buckets. Useful for serialization and storage.
+//! - [`CumulativeROHistogram`] — read-only histogram with cumulative counts
+//!   for fast quantile queries via binary search.
 //!
 //! # Example
 //!
@@ -41,6 +43,7 @@
 mod atomic;
 mod bucket;
 mod config;
+mod cumulative;
 mod errors;
 mod quantile;
 mod sparse;
@@ -49,6 +52,7 @@ mod standard;
 pub use atomic::AtomicHistogram;
 pub use bucket::Bucket;
 pub use config::Config;
+pub use cumulative::CumulativeROHistogram;
 pub use errors::Error;
 pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};
 pub use sparse::SparseHistogram;
