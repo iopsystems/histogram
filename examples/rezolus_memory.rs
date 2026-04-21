@@ -34,25 +34,23 @@ use histogram::{CumulativeROHistogram, Histogram, SparseHistogram};
 /// Memory footprint, in bytes, of a standard [`Histogram`] including its
 /// heap-allocated dense bucket array.
 fn histogram_bytes(h: &Histogram) -> usize {
-    mem::size_of::<Histogram>() + h.as_slice().len() * mem::size_of::<u64>()
+    mem::size_of::<Histogram>() + mem::size_of_val(h.as_slice())
 }
 
 /// Memory footprint, in bytes, of a [`SparseHistogram`] including the heap
-/// allocations backing its `index` and `count` vectors. Uses `capacity`,
-/// which reflects the actual memory allocated (and not just the logical
-/// occupancy returned by `len`).
+/// allocations backing its `index` and `count` vectors.
 fn sparse_bytes(h: &SparseHistogram) -> usize {
     mem::size_of::<SparseHistogram>()
-        + h.index().len() * mem::size_of::<u32>()
-        + h.count().len() * mem::size_of::<u64>()
+        + mem::size_of_val(h.index())
+        + mem::size_of_val(h.count())
 }
 
 /// Memory footprint, in bytes, of a [`CumulativeROHistogram`] including the
 /// heap allocations backing its `index` and `count` vectors.
 fn cumulative_bytes(h: &CumulativeROHistogram) -> usize {
     mem::size_of::<CumulativeROHistogram>()
-        + h.index().len() * mem::size_of::<u32>()
-        + h.count().len() * mem::size_of::<u64>()
+        + mem::size_of_val(h.index())
+        + mem::size_of_val(h.count())
 }
 
 #[derive(Default, Clone)]
