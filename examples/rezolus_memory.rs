@@ -40,9 +40,7 @@ fn histogram_bytes(h: &Histogram) -> usize {
 /// Memory footprint, in bytes, of a [`SparseHistogram`] including the heap
 /// allocations backing its `index` and `count` vectors.
 fn sparse_bytes(h: &SparseHistogram) -> usize {
-    mem::size_of::<SparseHistogram>()
-        + mem::size_of_val(h.index())
-        + mem::size_of_val(h.count())
+    mem::size_of::<SparseHistogram>() + mem::size_of_val(h.index()) + mem::size_of_val(h.count())
 }
 
 /// Memory footprint, in bytes, of a [`CumulativeROHistogram`] including the
