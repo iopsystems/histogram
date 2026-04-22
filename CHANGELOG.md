@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-04-22
+
+### Added
+
+- `CumulativeROHistogram`, a read-only histogram variant with cumulative
+  (prefix-sum) counts that enables O(log n) quantile lookups via binary search
+  (with a linear-scan fallback for cache-line-sized data)
+- `From<&Histogram>` and `From<&SparseHistogram>` conversions for constructing
+  a `CumulativeROHistogram`
+- Quantile range query methods on `CumulativeROHistogram` for analytics use
+  cases
+
 ## [1.1.0] - 2026-04-06
 
 ### Added
