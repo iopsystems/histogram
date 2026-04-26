@@ -297,15 +297,10 @@ Expected: clean build, no warnings.
 
 ```bash
 git add src/count.rs src/lib.rs
-git commit -m "$(cat <<'EOF'
-add Count and AtomicCount sealed traits
+git commit -m "add Count and AtomicCount sealed traits
 
 Introduces the counter-width abstraction used by the upcoming generic
-histogram types. Implemented for u32 and u64 with their atomic counterparts.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+histogram types. Implemented for u32 and u64 with their atomic counterparts."
 ```
 
 ---
@@ -480,16 +475,11 @@ Expected: all existing tests pass plus 8 new u32 tests pass.
 
 ```bash
 git add src/standard.rs
-git commit -m "$(cat <<'EOF'
-generalize Histogram to Histogram<C: Count = u64>
+git commit -m "generalize Histogram to Histogram<C: Count = u64>
 
 Existing call sites continue to infer Histogram<u64> via the default.
 Bucket.count remains u64 regardless of C; counts are widened via
-Count::as_u128() at the API boundary.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+Count::as_u128() at the API boundary."
 ```
 
 ---
@@ -655,16 +645,11 @@ Expected: all existing tests plus 4 new u32 tests pass.
 
 ```bash
 git add src/atomic.rs
-git commit -m "$(cat <<'EOF'
-generalize AtomicHistogram to AtomicHistogram<C: Count = u64>
+git commit -m "generalize AtomicHistogram to AtomicHistogram<C: Count = u64>
 
 drain() is split into concrete-typed impl blocks for u32 and u64 because
 cfg cannot gate generic impls on type parameters. AtomicHistogram<u32>::drain
-is available on more targets than AtomicHistogram<u64>::drain.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+is available on more targets than AtomicHistogram<u64>::drain."
 ```
 
 ---
@@ -797,15 +782,10 @@ Expected: all existing tests plus 5 new u32 tests pass.
 
 ```bash
 git add src/sparse.rs
-git commit -m "$(cat <<'EOF'
-generalize SparseHistogram to SparseHistogram<C: Count = u64>
+git commit -m "generalize SparseHistogram to SparseHistogram<C: Count = u64>
 
 Bucket counts in QuantilesResult continue to be widened to u64 via
-Count::as_u128 at the API boundary.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+Count::as_u128 at the API boundary."
 ```
 
 ---
@@ -1002,15 +982,10 @@ Expected: all existing tests plus 4 new u32 tests pass.
 
 ```bash
 git add src/cumulative.rs
-git commit -m "$(cat <<'EOF'
-generalize CumulativeROHistogram to CumulativeROHistogram<C: Count = u64>
+git commit -m "generalize CumulativeROHistogram to CumulativeROHistogram<C: Count = u64>
 
 individual_count and total_count continue to return u64 (widened via
-Count::as_u128) so the public API does not gain a generic Bucket type.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+Count::as_u128) so the public API does not gain a generic Bucket type."
 ```
 
 ---
@@ -1173,15 +1148,10 @@ Expected: 4 widening tests pass.
 
 ```bash
 git add src/conversions.rs src/lib.rs src/atomic.rs
-git commit -m "$(cat <<'EOF'
-add cross-width widening From impls
+git commit -m "add cross-width widening From impls
 
 u32 -> u64 widening for Histogram, AtomicHistogram, SparseHistogram,
-CumulativeROHistogram. Widening is infallible.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+CumulativeROHistogram. Widening is infallible."
 ```
 
 ---
@@ -1314,16 +1284,11 @@ Expected: all widening + 5 new narrowing tests pass.
 
 ```bash
 git add src/conversions.rs
-git commit -m "$(cat <<'EOF'
-add cross-width narrowing TryFrom impls
+git commit -m "add cross-width narrowing TryFrom impls
 
 u64 -> u32 narrowing for Histogram, SparseHistogram, CumulativeROHistogram.
 Cumulative narrowing checks only the total count (last cumulative value)
-since it bounds every prefix sum.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+since it bounds every prefix sum."
 ```
 
 ---
@@ -1506,17 +1471,12 @@ Expected: all prior conversion tests + 7 new combined-conversion tests pass.
 
 ```bash
 git add src/conversions.rs
-git commit -m "$(cat <<'EOF'
-add cross-variant + narrowing TryFrom impls for snapshot pipeline
+git commit -m "add cross-variant + narrowing TryFrom impls for snapshot pipeline
 
 Direct paths Histogram<u64> -> CumulativeROHistogram<u32>,
 Histogram<u64> -> SparseHistogram<u32>, and SparseHistogram<u64> ->
 CumulativeROHistogram<u32>. Each runs in a single pass; the cumulative
-target checks only the running total against u32::MAX.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+target checks only the running total against u32::MAX."
 ```
 
 ---
@@ -1585,15 +1545,10 @@ Expected: clean build of the bench binary.
 
 ```bash
 git add benches/histogram.rs
-git commit -m "$(cat <<'EOF'
-add u32 benchmark cases for Histogram and AtomicHistogram
+git commit -m "add u32 benchmark cases for Histogram and AtomicHistogram
 
 Confirms no regression on the u64 path and gives baseline numbers for
-the new u32 instantiations.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
+the new u32 instantiations."
 ```
 
 ---
