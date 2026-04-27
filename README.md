@@ -14,7 +14,7 @@ cargo add histogram
 ## Usage
 
 ```rust
-use histogram::Histogram;
+use histogram::{Histogram, Quantile};
 
 // Create a histogram with grouping power 7 and max value power 64.
 let mut histogram = Histogram::new(7, 64).unwrap();
@@ -24,12 +24,15 @@ for i in 1..=100 {
     histogram.increment(i).unwrap();
 }
 
-// Query percentiles using the 0.0..=1.0 scale.
-let median = histogram.percentile(0.5).unwrap().unwrap();
-let p99 = histogram.percentile(0.99).unwrap().unwrap();
-// percentile() returns Result<Option<Bucket>, Error>
-// outer unwrap: percentile value is valid
+// Query quantiles using the 0.0..=1.0 scale.
+let r50 = histogram.quantile(0.5).unwrap().unwrap();
+let r99 = histogram.quantile(0.99).unwrap().unwrap();
+// quantile() returns Result<Option<QuantilesResult>, Error>
+// outer unwrap: quantile value is valid
 // inner unwrap: histogram is non-empty
+
+let median = r50.get(&Quantile::new(0.5).unwrap()).unwrap();
+let p99 = r99.get(&Quantile::new(0.99).unwrap()).unwrap();
 
 println!("median: {}", median.end());
 println!("p99: {}", p99.end());

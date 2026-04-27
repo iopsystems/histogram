@@ -36,7 +36,7 @@ impl From<&AtomicHistogram32> for AtomicHistogram {
         let widened: Histogram = (&snapshot).into();
         let out = AtomicHistogram::with_config(&widened.config());
         for (i, &c) in widened.as_slice().iter().enumerate() {
-            out.buckets[i].fetch_add_relaxed(c);
+            out.buckets[i].store_relaxed(c);
         }
         out
     }
