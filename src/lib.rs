@@ -18,7 +18,7 @@
 //! # Example
 //!
 //! ```
-//! use histogram::Histogram;
+//! use histogram::{Histogram, Quantile};
 //!
 //! let mut h = Histogram::new(7, 64).unwrap();
 //!
@@ -26,13 +26,15 @@
 //!     h.increment(value).unwrap();
 //! }
 //!
-//! // Percentiles use the 0.0..=1.0 scale
-//! let p50 = h.percentile(0.5).unwrap().unwrap();
-//! let p99 = h.percentile(0.99).unwrap().unwrap();
-//! // percentile() returns Result<Option<Bucket>, Error>
-//! // outer unwrap: percentile value is valid
+//! // Quantiles use the 0.0..=1.0 scale
+//! let r50 = h.quantile(0.5).unwrap().unwrap();
+//! let r99 = h.quantile(0.99).unwrap().unwrap();
+//! // quantile() returns Result<Option<QuantilesResult>, Error>
+//! // outer unwrap: quantile value is valid
 //! // inner unwrap: histogram is non-empty
 //!
+//! let p50 = r50.get(&Quantile::new(0.5).unwrap()).unwrap();
+//! let p99 = r99.get(&Quantile::new(0.99).unwrap()).unwrap();
 //! println!("p50: {}-{}", p50.start(), p50.end());
 //! println!("p99: {}-{}", p99.start(), p99.end());
 //! ```

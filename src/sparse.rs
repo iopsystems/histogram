@@ -652,7 +652,11 @@ mod tests {
         let percentiles = [0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.99, 0.999];
         for percentile in percentiles {
             let bempty = hempty.percentile(percentile).unwrap();
-            let bstandard = hstandard.percentile(percentile).unwrap();
+            // Use quantile() on hstandard (deprecated percentile() removed)
+            let bstandard = hstandard
+                .quantile(percentile)
+                .unwrap()
+                .map(|r| r.get(&Quantile::new(percentile).unwrap()).unwrap().clone());
             let bsparse = hsparse.percentile(percentile).unwrap();
 
             assert_eq!(bempty, None);
@@ -660,10 +664,13 @@ mod tests {
         }
 
         assert_eq!(hempty.percentiles(&percentiles), Ok(None));
-        assert_eq!(
-            hstandard.percentiles(&percentiles).unwrap(),
-            hsparse.percentiles(&percentiles).unwrap()
-        );
+        // Compare sparse percentiles against standard quantiles
+        let sparse_result = hsparse.percentiles(&percentiles).unwrap().unwrap();
+        for (p, bucket) in &sparse_result {
+            let q = hstandard.quantile(*p).unwrap().unwrap();
+            let standard_bucket = q.get(&Quantile::new(*p).unwrap()).unwrap();
+            assert_eq!(bucket, standard_bucket);
+        }
     }
 
     #[allow(deprecated)]
