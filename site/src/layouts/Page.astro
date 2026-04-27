@@ -1,0 +1,42 @@
+---
+import '../styles/global.css';
+
+interface Frontmatter {
+  title: string;
+  description?: string;
+}
+
+interface Props {
+  title?: string;
+  description?: string;
+  frontmatter?: Frontmatter;
+}
+
+const { frontmatter } = Astro.props;
+const title = Astro.props.title ?? frontmatter?.title ?? 'H2Histogram';
+const description = Astro.props.description ?? frontmatter?.description;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="canonical" href={Astro.url.href} />
+  </head>
+  <body>
+    <main>
+      <slot />
+      <footer class="site-footer">
+        <p>
+          Source: <a href="https://github.com/iopsystems/histogram">iopsystems/histogram</a>.
+          Originally authored as an
+          <a href="https://observablehq.com/@iopsystems/h2-histogram">Observable notebook</a>
+          by Yao Yue.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

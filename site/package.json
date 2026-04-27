@@ -1,0 +1,25 @@
+{
+  "name": "h2histogram-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@astrojs/mdx": "^4.0.5",
+    "@astrojs/svelte": "^7.0.4",
+    "astro": "^5.2.0",
+    "katex": "^0.16.11",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
+    "svelte": "^5.16.0",
+    "typescript": "^5.7.2"
+  }
+}
