@@ -45,6 +45,7 @@
 mod atomic;
 mod bucket;
 mod config;
+mod conversions;
 mod count;
 mod cumulative;
 mod errors;
