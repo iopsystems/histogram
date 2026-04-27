@@ -72,7 +72,21 @@ macro_rules! define_histogram {
                 &mut self.buckets
             }
 
-            /// Returns a new histogram with a reduced grouping power.
+            /// Returns a new histogram with a reduced grouping power. The reduced
+            /// grouping power should lie in the range (0..existing grouping power).
+            ///
+            /// Returns an error if the requested grouping power is not less than the current grouping power.
+            ///
+            /// The difference in grouping powers determines how much histogram size
+            /// is reduced by, with every step approximately halving the total
+            /// number of buckets (and hence total size of the histogram), while
+            /// doubling the relative error.
+            ///
+            /// This works by iterating over every bucket in the existing histogram
+            /// and inserting the contained values into the new histogram. While we
+            /// do not know the exact values of the data points (only that they lie
+            /// within the bucket's range), it does not matter since the bucket is
+            /// not split during downsampling and any value can be used.
             pub fn downsample(&self, grouping_power: u8) -> Result<Self, Error> {
                 if grouping_power >= self.config.grouping_power() {
                     return Err(Error::IncompatibleParameters);
@@ -87,7 +101,11 @@ macro_rules! define_histogram {
                 Ok(histogram)
             }
 
-            /// Adds the other histogram to this histogram and returns the result.
+            /// Adds the other histogram to this histogram and returns the result as a
+            /// new histogram.
+            ///
+            /// An error is returned if the two histograms have incompatible parameters
+            /// or if there is an overflow.
             pub fn checked_add(&self, other: &Self) -> Result<Self, Error> {
                 if self.config != other.config {
                     return Err(Error::IncompatibleParameters);
@@ -99,7 +117,10 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
-            /// Adds the other histogram to this histogram and returns the result.
+            /// Adds the other histogram to this histogram and returns the result as a
+            /// new histogram.
+            ///
+            /// An error is returned if the two histograms have incompatible parameters.
             pub fn wrapping_add(&self, other: &Self) -> Result<Self, Error> {
                 if self.config != other.config {
                     return Err(Error::IncompatibleParameters);
@@ -111,8 +132,11 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
-            /// Subtracts the other histogram from this histogram and returns
-            /// the result.
+            /// Subtracts the other histogram from this histogram and returns the result
+            /// as a new histogram.
+            ///
+            /// An error is returned if the two histograms have incompatible parameters
+            /// or if there is an overflow.
             pub fn checked_sub(&self, other: &Self) -> Result<Self, Error> {
                 if self.config != other.config {
                     return Err(Error::IncompatibleParameters);
@@ -124,8 +148,10 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
-            /// Subtracts the other histogram from this histogram and returns
-            /// the result.
+            /// Subtracts the other histogram from this histogram and returns the result
+            /// as a new histogram.
+            ///
+            /// An error is returned if the two histograms have incompatible parameters.
             pub fn wrapping_sub(&self, other: &Self) -> Result<Self, Error> {
                 if self.config != other.config {
                     return Err(Error::IncompatibleParameters);
@@ -151,11 +177,23 @@ macro_rules! define_histogram {
             }
 
             /// Compute quantiles for the given values.
+            ///
+            /// Each value in `quantiles` must be in `0.0..=1.0`. Returns
+            /// `Err(Error::InvalidQuantile)` if any value is out of range,
+            /// `Ok(None)` if the histogram is empty.
+            ///
+            /// This is an inherent forwarder for [`SampleQuantiles::quantiles`].
             pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
                 <Self as SampleQuantiles>::quantiles(self, quantiles)
             }
 
             /// Compute a single quantile.
+            ///
+            /// The quantile must be in `0.0..=1.0`. Returns
+            /// `Err(Error::InvalidQuantile)` if out of range, `Ok(None)` if the
+            /// histogram is empty.
+            ///
+            /// This is an inherent forwarder for [`SampleQuantiles::quantile`].
             pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
                 <Self as SampleQuantiles>::quantile(self, quantile)
             }
@@ -271,6 +309,8 @@ macro_rules! define_histogram {
 
         impl std::iter::FusedIterator for $iter<'_> {}
 
+        // Requires: `$sparse.count` is `Vec<$count>` (the same count type as `$name`).
+        // Task 4 enforces this when defining SparseHistogram32 alongside Histogram32.
         impl From<&$sparse> for $name {
             fn from(other: &$sparse) -> Self {
                 let mut histogram = $name::with_config(&other.config);
