@@ -17,9 +17,7 @@ mod private {
 /// A counter type usable for histogram bucket counts.
 ///
 /// Sealed: implemented only for `u32` and `u64` inside this crate.
-pub trait Count:
-    private::Sealed + Copy + Default + Eq + Ord + std::fmt::Debug + 'static
-{
+pub trait Count: private::Sealed + Copy + Default + Eq + Ord + std::fmt::Debug + 'static {
     /// The atomic-primitive counterpart used by `AtomicHistogram<Self>`.
     type Atomic: AtomicCount<Value = Self>;
 
@@ -63,17 +61,29 @@ impl Count for u32 {
     const ONE: Self = 1;
 
     #[inline]
-    fn wrapping_add(self, other: Self) -> Self { u32::wrapping_add(self, other) }
+    fn wrapping_add(self, other: Self) -> Self {
+        u32::wrapping_add(self, other)
+    }
     #[inline]
-    fn wrapping_sub(self, other: Self) -> Self { u32::wrapping_sub(self, other) }
+    fn wrapping_sub(self, other: Self) -> Self {
+        u32::wrapping_sub(self, other)
+    }
     #[inline]
-    fn checked_add(self, other: Self) -> Option<Self> { u32::checked_add(self, other) }
+    fn checked_add(self, other: Self) -> Option<Self> {
+        u32::checked_add(self, other)
+    }
     #[inline]
-    fn checked_sub(self, other: Self) -> Option<Self> { u32::checked_sub(self, other) }
+    fn checked_sub(self, other: Self) -> Option<Self> {
+        u32::checked_sub(self, other)
+    }
     #[inline]
-    fn as_u128(self) -> u128 { self as u128 }
+    fn as_u128(self) -> u128 {
+        self as u128
+    }
     #[inline]
-    fn try_from_u64(v: u64) -> Option<Self> { u32::try_from(v).ok() }
+    fn try_from_u64(v: u64) -> Option<Self> {
+        u32::try_from(v).ok()
+    }
 }
 
 impl Count for u64 {
@@ -82,45 +92,77 @@ impl Count for u64 {
     const ONE: Self = 1;
 
     #[inline]
-    fn wrapping_add(self, other: Self) -> Self { u64::wrapping_add(self, other) }
+    fn wrapping_add(self, other: Self) -> Self {
+        u64::wrapping_add(self, other)
+    }
     #[inline]
-    fn wrapping_sub(self, other: Self) -> Self { u64::wrapping_sub(self, other) }
+    fn wrapping_sub(self, other: Self) -> Self {
+        u64::wrapping_sub(self, other)
+    }
     #[inline]
-    fn checked_add(self, other: Self) -> Option<Self> { u64::checked_add(self, other) }
+    fn checked_add(self, other: Self) -> Option<Self> {
+        u64::checked_add(self, other)
+    }
     #[inline]
-    fn checked_sub(self, other: Self) -> Option<Self> { u64::checked_sub(self, other) }
+    fn checked_sub(self, other: Self) -> Option<Self> {
+        u64::checked_sub(self, other)
+    }
     #[inline]
-    fn as_u128(self) -> u128 { self as u128 }
+    fn as_u128(self) -> u128 {
+        self as u128
+    }
     #[inline]
-    fn try_from_u64(v: u64) -> Option<Self> { Some(v) }
+    fn try_from_u64(v: u64) -> Option<Self> {
+        Some(v)
+    }
 }
 
 impl AtomicCount for AtomicU32 {
     type Value = u32;
     #[inline]
-    fn new(v: u32) -> Self { AtomicU32::new(v) }
+    fn new(v: u32) -> Self {
+        AtomicU32::new(v)
+    }
     #[inline]
-    fn load_relaxed(&self) -> u32 { self.load(Ordering::Relaxed) }
+    fn load_relaxed(&self) -> u32 {
+        self.load(Ordering::Relaxed)
+    }
     #[inline]
-    fn store_relaxed(&self, v: u32) { self.store(v, Ordering::Relaxed) }
+    fn store_relaxed(&self, v: u32) {
+        self.store(v, Ordering::Relaxed)
+    }
     #[inline]
-    fn fetch_add_relaxed(&self, v: u32) { self.fetch_add(v, Ordering::Relaxed); }
+    fn fetch_add_relaxed(&self, v: u32) {
+        self.fetch_add(v, Ordering::Relaxed);
+    }
     #[inline]
-    fn swap_relaxed(&self, v: u32) -> u32 { self.swap(v, Ordering::Relaxed) }
+    fn swap_relaxed(&self, v: u32) -> u32 {
+        self.swap(v, Ordering::Relaxed)
+    }
 }
 
 impl AtomicCount for AtomicU64 {
     type Value = u64;
     #[inline]
-    fn new(v: u64) -> Self { AtomicU64::new(v) }
+    fn new(v: u64) -> Self {
+        AtomicU64::new(v)
+    }
     #[inline]
-    fn load_relaxed(&self) -> u64 { self.load(Ordering::Relaxed) }
+    fn load_relaxed(&self) -> u64 {
+        self.load(Ordering::Relaxed)
+    }
     #[inline]
-    fn store_relaxed(&self, v: u64) { self.store(v, Ordering::Relaxed) }
+    fn store_relaxed(&self, v: u64) {
+        self.store(v, Ordering::Relaxed)
+    }
     #[inline]
-    fn fetch_add_relaxed(&self, v: u64) { self.fetch_add(v, Ordering::Relaxed); }
+    fn fetch_add_relaxed(&self, v: u64) {
+        self.fetch_add(v, Ordering::Relaxed);
+    }
     #[inline]
-    fn swap_relaxed(&self, v: u64) -> u64 { self.swap(v, Ordering::Relaxed) }
+    fn swap_relaxed(&self, v: u64) -> u64 {
+        self.swap(v, Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -155,7 +197,10 @@ mod tests {
     #[test]
     fn try_from_u64_narrowing() {
         assert_eq!(<u32 as Count>::try_from_u64(42), Some(42u32));
-        assert_eq!(<u32 as Count>::try_from_u64(u32::MAX as u64), Some(u32::MAX));
+        assert_eq!(
+            <u32 as Count>::try_from_u64(u32::MAX as u64),
+            Some(u32::MAX)
+        );
         assert_eq!(<u32 as Count>::try_from_u64(u32::MAX as u64 + 1), None);
         assert_eq!(<u64 as Count>::try_from_u64(u64::MAX), Some(u64::MAX));
     }
