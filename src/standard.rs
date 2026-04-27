@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
-use crate::{Bucket, Config, Count, Error, SparseHistogram};
-// SparseHistogram32 import is added in Task 4 when Histogram32 is uncommented.
+use crate::{Bucket, Config, Count, Error, SparseHistogram, SparseHistogram32};
 
 macro_rules! define_histogram {
     ($name:ident, $iter:ident, $sparse:ident, $count:ty) => {
@@ -324,7 +323,7 @@ macro_rules! define_histogram {
 }
 
 define_histogram!(Histogram, Iter, SparseHistogram, u64);
-// define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);  // uncommented in Task 4
+define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);
 
 #[cfg(test)]
 mod tests {
@@ -522,5 +521,48 @@ mod tests {
         let buckets = histogram.as_slice();
         let constructed = Histogram::from_buckets(8, 32, buckets.to_vec()).unwrap();
         assert!(constructed == histogram);
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn size_u32() {
+        assert_eq!(std::mem::size_of::<Histogram32>(), 48);
+    }
+
+    #[test]
+    fn increment_u32() {
+        let mut h = Histogram32::new(7, 64).unwrap();
+        h.increment(5).unwrap();
+        h.increment(5).unwrap();
+        h.increment(5).unwrap();
+        let result = h.quantile(0.5).unwrap().unwrap();
+        let q = Quantile::new(0.5).unwrap();
+        assert_eq!(result.get(&q).unwrap().count(), 3u64);
+    }
+
+    #[test]
+    fn add_u32_wraps_at_max() {
+        let mut h = Histogram32::new(2, 4).unwrap();
+        h.add(1, u32::MAX).unwrap();
+        h.add(1, 1).unwrap();
+        assert_eq!(h.as_slice()[1], 0u32);
+    }
+
+    #[test]
+    fn checked_add_u32_overflow() {
+        let mut h1 = Histogram32::new(1, 3).unwrap();
+        let mut h2 = Histogram32::new(1, 3).unwrap();
+        h1.as_mut_slice()[0] = u32::MAX;
+        h2.as_mut_slice()[0] = 1;
+        assert_eq!(h1.checked_add(&h2), Err(Error::Overflow));
+    }
+
+    #[test]
+    fn iter_u32_widens_count_to_u64() {
+        let mut h = Histogram32::new(2, 4).unwrap();
+        h.add(1, 5u32).unwrap();
+        let bucket = h.iter().find(|b| b.count() > 0).unwrap();
+        let count: u64 = bucket.count();
+        assert_eq!(count, 5);
     }
 }

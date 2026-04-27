@@ -1,9 +1,7 @@
-#[allow(unused_imports)]
-// AtomicU32 used by the AtomicHistogram32 invocation enabled in Task 4
 use core::sync::atomic::{AtomicU32, AtomicU64};
 
 use crate::config::Config;
-use crate::{AtomicCount, Count, Error, Histogram};
+use crate::{AtomicCount, Count, Error, Histogram, Histogram32};
 
 macro_rules! define_atomic_histogram {
     ($name:ident, $count:ty, $atomic:ty, $hist:ident) => {
@@ -75,7 +73,7 @@ macro_rules! define_atomic_histogram {
 }
 
 define_atomic_histogram!(AtomicHistogram, u64, AtomicU64, Histogram);
-// define_atomic_histogram!(AtomicHistogram32, u32, AtomicU32, Histogram32);  // uncommented in Task 4
+define_atomic_histogram!(AtomicHistogram32, u32, AtomicU32, Histogram32);
 
 // NOTE: once stabilized, `target_has_atomic_load_store` is more correct.
 // https://github.com/rust-lang/rust/issues/94039
@@ -95,14 +93,19 @@ impl AtomicHistogram {
     }
 }
 
-// AtomicHistogram32 drain block — uncommented in Task 4 once Histogram32 exists.
-// #[cfg(target_has_atomic = "32")]
-// impl AtomicHistogram32 {
-//     pub fn drain(&self) -> Histogram32 {
-//         let buckets: Vec<u32> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
-//         Histogram32 { config: self.config, buckets: buckets.into() }
-//     }
-// }
+#[cfg(target_has_atomic = "32")]
+impl AtomicHistogram32 {
+    /// Drains the bucket values into a new `Histogram32`. Resets all
+    /// buckets to zero. Available only on platforms that support 32-bit
+    /// atomics (more widely supported than 64-bit).
+    pub fn drain(&self) -> Histogram32 {
+        let buckets: Vec<u32> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
+        Histogram32 {
+            config: self.config,
+            buckets: buckets.into(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -215,5 +218,24 @@ mod tests {
                 range: 1024..=1031,
             })
         );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn size_u32() {
+        assert_eq!(std::mem::size_of::<AtomicHistogram32>(), 48);
+    }
+
+    #[cfg(target_has_atomic = "32")]
+    #[test]
+    fn drain_u32() {
+        let h = AtomicHistogram32::new(7, 64).unwrap();
+        for v in 0..=100u64 {
+            h.increment(v).unwrap();
+        }
+        let snap = h.drain();
+        let result = snap.quantile(0.5).unwrap().unwrap();
+        let q = Quantile::new(0.5).unwrap();
+        assert_eq!(result.get(&q).unwrap().end(), 50);
     }
 }
