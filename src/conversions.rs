@@ -104,6 +104,72 @@ impl TryFrom<&CumulativeROHistogram> for CumulativeROHistogram32 {
 }
 
 // =================================================================
+// Cross-variant + narrowing combined (u64 -> u32) — Task 8
+// =================================================================
+
+/// Direct path for the snapshot pipeline:
+/// `Histogram` (delta) → `CumulativeROHistogram32`.
+///
+/// Single pass: accumulate non-zero buckets, fail with `Error::Overflow`
+/// if the running total ever exceeds `u32::MAX`.
+impl TryFrom<&Histogram> for CumulativeROHistogram32 {
+    type Error = Error;
+    fn try_from(h: &Histogram) -> Result<Self, Error> {
+        let mut index: Vec<u32> = Vec::new();
+        let mut count: Vec<u32> = Vec::new();
+        let mut running: u64 = 0;
+        for (i, &n) in h.as_slice().iter().enumerate() {
+            if n > 0 {
+                running = running.checked_add(n).ok_or(Error::Overflow)?;
+                if running > u32::MAX as u64 {
+                    return Err(Error::Overflow);
+                }
+                index.push(i as u32);
+                count.push(running as u32);
+            }
+        }
+        CumulativeROHistogram32::from_parts(h.config(), index, count)
+    }
+}
+
+/// Direct path: `Histogram` → `SparseHistogram32`.
+///
+/// Single pass: copy non-zero buckets, per-bucket overflow check.
+impl TryFrom<&Histogram> for SparseHistogram32 {
+    type Error = Error;
+    fn try_from(h: &Histogram) -> Result<Self, Error> {
+        let mut index: Vec<u32> = Vec::new();
+        let mut count: Vec<u32> = Vec::new();
+        for (i, &n) in h.as_slice().iter().enumerate() {
+            if n > 0 {
+                count.push(u32::try_from(n).map_err(|_| Error::Overflow)?);
+                index.push(i as u32);
+            }
+        }
+        SparseHistogram32::from_parts(h.config(), index, count)
+    }
+}
+
+/// Direct path: `SparseHistogram` → `CumulativeROHistogram32`.
+///
+/// Single pass: cumulative running sum, total-only overflow check.
+impl TryFrom<&SparseHistogram> for CumulativeROHistogram32 {
+    type Error = Error;
+    fn try_from(h: &SparseHistogram) -> Result<Self, Error> {
+        let mut running: u64 = 0;
+        let mut count: Vec<u32> = Vec::with_capacity(h.count().len());
+        for &n in h.count() {
+            running = running.checked_add(n).ok_or(Error::Overflow)?;
+            if running > u32::MAX as u64 {
+                return Err(Error::Overflow);
+            }
+            count.push(running as u32);
+        }
+        CumulativeROHistogram32::from_parts(h.config(), h.index().to_vec(), count)
+    }
+}
+
+// =================================================================
 // Tests
 // =================================================================
 
@@ -210,5 +276,73 @@ mod tests {
         let h64: Histogram = (&h32).into();
         let h32_back: Histogram32 = (&h64).try_into().unwrap();
         assert_eq!(h32.as_slice(), h32_back.as_slice());
+    }
+
+    // ---------- Cross-variant + narrowing combined ----------
+
+    #[test]
+    fn histogram_to_cumulative32() {
+        let mut h = Histogram::new(7, 32).unwrap();
+        h.add(1, 100u64).unwrap();
+        h.add(50, 200u64).unwrap();
+        h.add(1000, 300u64).unwrap();
+        let croh: CumulativeROHistogram32 = (&h).try_into().unwrap();
+        assert_eq!(croh.total_count(), 600);
+        assert_eq!(croh.count().len(), 3);
+    }
+
+    #[test]
+    fn histogram_to_cumulative32_overflow() {
+        let mut h = Histogram::new(2, 4).unwrap();
+        h.add(0, 3_000_000_000u64).unwrap();
+        h.add(1, 2_000_000_000u64).unwrap();
+        let r: Result<CumulativeROHistogram32, _> = (&h).try_into();
+        assert_eq!(r, Err(Error::Overflow));
+    }
+
+    #[test]
+    fn histogram_to_sparse32() {
+        let mut h = Histogram::new(7, 32).unwrap();
+        h.add(1, 100u64).unwrap();
+        h.add(1000, 200u64).unwrap();
+        let s: SparseHistogram32 = (&h).try_into().unwrap();
+        assert_eq!(s.count().iter().map(|&c| c as u64).sum::<u64>(), 300);
+    }
+
+    #[test]
+    fn sparse_to_cumulative32() {
+        let config = Config::new(7, 32).unwrap();
+        let s = SparseHistogram::from_parts(config, vec![1, 3], vec![100u64, 200]).unwrap();
+        let c: CumulativeROHistogram32 = (&s).try_into().unwrap();
+        assert_eq!(c.count(), &[100u32, 300]);
+    }
+
+    #[test]
+    fn direct_path_matches_two_step() {
+        let mut h = Histogram::new(4, 10).unwrap();
+        for v in 1..1024u64 {
+            h.increment(v).unwrap();
+        }
+        let direct: CumulativeROHistogram32 = (&h).try_into().unwrap();
+        let mid: CumulativeROHistogram = (&h).into();
+        let two_step: CumulativeROHistogram32 = (&mid).try_into().unwrap();
+        assert_eq!(direct.count(), two_step.count());
+        assert_eq!(direct.index(), two_step.index());
+    }
+
+    #[test]
+    fn snapshot_pipeline_end_to_end() {
+        let recorder = AtomicHistogram::new(7, 64).unwrap();
+        for v in 1..=50u64 {
+            recorder.increment(v).unwrap();
+        }
+        let snap_t0 = recorder.load();
+        for v in 1..=50u64 {
+            recorder.increment(v).unwrap();
+        }
+        let snap_t1 = recorder.load();
+        let delta = snap_t1.checked_sub(&snap_t0).unwrap();
+        let analytic: CumulativeROHistogram32 = (&delta).try_into().unwrap();
+        assert_eq!(analytic.total_count(), 50);
     }
 }
