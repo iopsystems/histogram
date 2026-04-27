@@ -325,6 +325,43 @@ macro_rules! define_histogram {
 define_histogram!(Histogram, Iter, SparseHistogram, u64);
 define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);
 
+// Deprecated forwarding methods — only on the u64 variant to avoid proliferating
+// deprecated APIs onto the new u32 type. Mirrors the same pattern in sparse.rs.
+impl Histogram {
+    /// Return a collection of percentiles from this histogram.
+    ///
+    /// Each percentile should be in the inclusive range `0.0..=1.0`. For
+    /// example, the 50th percentile (median) can be found using `0.5`.
+    ///
+    /// The results will be sorted by the percentile.
+    #[deprecated(note = "Use the SampleQuantiles trait")]
+    #[allow(deprecated)]
+    pub fn percentiles(&self, percentiles: &[f64]) -> Result<Option<Vec<(f64, Bucket)>>, Error> {
+        Ok(SampleQuantiles::quantiles(self, percentiles)
+            .map_err(|e| match e {
+                Error::InvalidQuantile => Error::InvalidPercentile,
+                other => other,
+            })?
+            .map(|qr| {
+                qr.entries()
+                    .iter()
+                    .map(|(q, b)| (q.as_f64(), b.clone()))
+                    .collect()
+            }))
+    }
+
+    /// Return a single percentile from this histogram.
+    ///
+    /// The percentile should be in the inclusive range `0.0..=1.0`. For
+    /// example, the 50th percentile (median) can be found using `0.5`.
+    #[deprecated(note = "Use the SampleQuantiles trait")]
+    pub fn percentile(&self, percentile: f64) -> Result<Option<Bucket>, Error> {
+        #[allow(deprecated)]
+        self.percentiles(&[percentile])
+            .map(|v| v.map(|x| x.first().unwrap().1.clone()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
