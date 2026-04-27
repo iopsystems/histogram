@@ -46,12 +46,12 @@
     exponent ${tex`n`}.
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    viewof n = Inputs.range([8, 64], {value: 64, step: 1, label: tex`n`})
+  <script type="module">
+    const n = view(Inputs.range([8, 64], {value: 64, step: 1, label: tex`n`}));
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    N = (1n << BigInt(n)) - 1n
+  <script type="module">
+    const N = (1n << BigInt(n)) - 1n;
   </script>
 
   <script type="text/markdown">
@@ -63,12 +63,12 @@
     quantization, parameterized by the exponent (of its inverse), ${tex`p`}.
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    viewof p = Inputs.range([2, 22], {value: 10, step: 1, label: tex`p`})
+  <script type="module">
+    const p = view(Inputs.range([2, 22], {value: 10, step: 1, label: tex`p`}));
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    e = 1 / 2 ** p
+  <script type="module">
+    const e = 1 / 2 ** p;
   </script>
 
   <script type="text/markdown">
@@ -105,8 +105,8 @@
     ### Bucket Summary
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    total_buckets = (1n << BigInt(p)) * BigInt(n - p + 1)
+  <script type="module">
+    const total_buckets = (1n << BigInt(p)) * BigInt(n - p + 1);
   </script>
 
   <script type="text/markdown">
@@ -161,7 +161,7 @@
     ### Bucket Layout
   </script>
 
-  <script type="application/vnd.observable.javascript">
+  <script type="module">
     function compute_buckets(n, p) {
       const groups = [];
       let lower = 0n;
@@ -180,12 +180,12 @@
     }
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    buckets = compute_buckets(n, p)
+  <script type="module">
+    const buckets = compute_buckets(n, p);
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    Inputs.table(buckets, {rows: 16})
+  <script type="module">
+    display(Inputs.table(buckets, {rows: 16}));
   </script>
 
   <script type="text/markdown">
@@ -349,16 +349,16 @@
     histogram can save you:
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    viewof l = Inputs.range([0, n - 1], {value: Math.min(10, n - 1), step: 1, label: tex`l`})
+  <script type="module">
+    const l = view(Inputs.range([0, n - 1], {value: Math.min(10, n - 1), step: 1, label: tex`l`}));
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    truncated_buckets = l > p + 1 ? BigInt(l - p + 1) * (1n << BigInt(p)) : (1n << BigInt(l))
+  <script type="module">
+    const truncated_buckets = l > p + 1 ? BigInt(l - p + 1) * (1n << BigInt(p)) : (1n << BigInt(l));
   </script>
 
-  <script type="application/vnd.observable.javascript">
-    reduction_pct = total_buckets === 0n ? 0 : (Number(truncated_buckets) / Number(total_buckets)) * 100
+  <script type="module">
+    const reduction_pct = total_buckets === 0n ? 0 : (Number(truncated_buckets) / Number(total_buckets)) * 100;
   </script>
 
   <script type="text/markdown">
