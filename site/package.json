@@ -1,0 +1,13 @@
+{
+  "name": "h2histogram-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "notebooks preview --root src",
+    "build": "notebooks build --root src --out ../dist --empty -- src/*.html"
+  },
+  "dependencies": {
+    "@observablehq/notebook-kit": "^1.5.2"
+  }
+}
