@@ -1,14 +1,18 @@
-# u32 Bucket Counts Implementation Plan
+# u32 Bucket Counts Implementation Plan (v2 — named-sibling/macro approach)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `u32` as a first-class counter width across all four histogram variants via generics with a `C: Count = u64` default, preserving backward compatibility for all existing call sites.
+**Goal:** Add `u32` as a sibling counter width across all four histogram variants by introducing named concrete sibling types (`Histogram32`, `AtomicHistogram32`, `SparseHistogram32`, `CumulativeROHistogram32`) generated from a shared declarative macro per variant. Existing types stay byte-identical to today — no source breakage for any user.
 
-**Architecture:** Introduce a sealed `Count` trait (with paired `AtomicCount`) that abstracts over `u32`/`u64`. Generalize `Histogram`, `AtomicHistogram`, `SparseHistogram`, `CumulativeROHistogram` to `<C: Count = u64>` so existing code continues to infer `<u64>`. Add `From` (widening) and `TryFrom` (narrowing, including direct cross-variant + narrow combined paths) conversions to support the recording → snapshot → analytics pipeline.
+**Architecture:** A single `macro_rules!` macro per variant takes a type name, an iterator name, and a count primitive (and, for atomic, the atomic primitive plus the corresponding non-atomic histogram name). It emits the full struct definition, impl block, iterator types, and trait impls. The macro is invoked twice per variant — once for the existing type names and once for the new `*32` siblings. The internal vocabulary uses the sealed `Count` / `AtomicCount` traits already shipped in Task 1.
 
 **Tech Stack:** Rust 2024 edition, `core::sync::atomic::{AtomicU32, AtomicU64}`, `criterion` for bench, `serde`/`schemars` (optional features), `cargo test` / `cargo bench`.
 
-**Spec:** [docs/superpowers/specs/2026-04-26-u32-bucket-counts-design.md](../specs/2026-04-26-u32-bucket-counts-design.md)
+**Spec:** [docs/superpowers/specs/2026-04-26-u32-bucket-counts-design.md](../specs/2026-04-26-u32-bucket-counts-design.md) (v2, revised 2026-04-26)
+
+**Prerequisite (already done):** Task 1 added `Count` and `AtomicCount` sealed traits in `src/count.rs` with re-exports from `src/lib.rs`. Commits `bba6635` (initial) and `26776af` (rustfmt).
+
+**Cross-task dependency note:** Some `*32` types reference each other (e.g., `Histogram32` mentions `SparseHistogram32`). The plan handles this by commenting out the `*32` macro invocations in Tasks 2 and 3 and uncommenting them in Task 4 once all referenced types exist. The intermediate commits (Task 2 / Task 3) are intentionally u64-only.
 
 ---
 
@@ -16,376 +20,1007 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `src/count.rs` | **Create** | `Count` and `AtomicCount` sealed traits + impls for `u32`, `u64`, `AtomicU32`, `AtomicU64`. |
-| `src/lib.rs` | Modify | Re-export `Count`, `AtomicCount`. Add module-level rustdoc for counter width and recommended pipeline. |
-| `src/standard.rs` | Modify | Generalize `Histogram` → `Histogram<C: Count = u64>`. Generalize `Iter`, `SampleQuantiles`, `From<&SparseHistogram<C>>` impls. Add u32-specific tests. |
-| `src/atomic.rs` | Modify | Generalize `AtomicHistogram` → `AtomicHistogram<C: Count = u64>`. Concrete-typed `drain` impls for `<u64>` and `<u32>` (per cfg). Add u32-specific tests. |
-| `src/sparse.rs` | Modify | Generalize `SparseHistogram` → `SparseHistogram<C: Count = u64>`. Generalize `From<&Histogram<C>>` and `SampleQuantiles`. Add u32-specific tests. |
-| `src/cumulative.rs` | Modify | Generalize `CumulativeROHistogram` → `CumulativeROHistogram<C: Count = u64>`. Generalize `From` impls and `SampleQuantiles`. Add u32-specific tests. |
-| `src/conversions.rs` | **Create** | All cross-width and cross-variant + narrowing conversion impls (`From` for widening, `TryFrom` for narrowing). Keeps the conversion matrix in one auditable place. |
-| `benches/histogram.rs` | Modify | Add `Histogram<u32>` and `AtomicHistogram<u32>` bench groups alongside existing `<u64>` cases. |
+| `src/count.rs` | (already shipped) | `Count` and `AtomicCount` sealed traits + impls. |
+| `src/lib.rs` | Modify | Re-export new `*32` types. Add module-level rustdoc. |
+| `src/standard.rs` | Modify (whole-file macroification) | `define_histogram!` macro; invoke for `Histogram` and `Histogram32`. |
+| `src/atomic.rs` | Modify (whole-file macroification) | `define_atomic_histogram!` macro; invoke for `AtomicHistogram` and `AtomicHistogram32`. Concrete-type `drain` blocks per cfg. |
+| `src/sparse.rs` | Modify (whole-file macroification) | `define_sparse_histogram!` macro; invoke for both. |
+| `src/cumulative.rs` | Modify (whole-file macroification) | `define_cumulative_histogram!` macro; invoke for both. |
+| `src/conversions.rs` | **Create** | Cross-width and cross-variant + narrowing conversion impls. |
+| `benches/histogram.rs` | Modify | Add `Histogram32` / `AtomicHistogram32` bench groups. |
 | `README.md` | Modify | New "Counter Width" and "Recommended Pipeline" sections. |
-| `Cargo.toml` | Modify | Bump version to next alpha (`1.3.0-alpha.0` or higher revision if main has already advanced). |
+| `Cargo.toml` | Modify | Bump version to next alpha (`1.3.0-alpha.<n>`). |
 
 ---
 
-## Task 1: Add `Count` and `AtomicCount` sealed traits
+## Task 2: Macroify `Histogram` and prepare `Histogram32`
 
 **Files:**
-- Create: `src/count.rs`
-- Modify: `src/lib.rs` (add module declaration and re-exports)
+- Modify: `src/standard.rs` (whole-file refactor — wrap existing impl in macro)
 
-- [ ] **Step 1: Create `src/count.rs` with the sealed trait definitions**
+This is the first variant macroification. Subsequent tasks (3, 4, 5) follow the same pattern.
 
-Write to `src/count.rs`:
+**Important deprecation note:** the macroification drops the deprecated `percentile` / `percentiles` inherent methods (already marked `#[deprecated]` since v1.0). Users who relied on them migrate to `quantile`/`quantiles` (same shape, different name) or to the `SampleQuantiles` trait. Document in CHANGELOG via Task 10.
+
+- [ ] **Step 1: Read the current file end-to-end**
+
+Read `src/standard.rs` so you know exactly what's there. The existing file has a `Histogram` struct, an `impl Histogram` block, an `impl SampleQuantiles for Histogram` block, an `Iter` struct + `Iterator` / `ExactSizeIterator` / `FusedIterator` impls, an `IntoIterator for &Histogram` impl, an `impl From<&SparseHistogram> for Histogram` impl, and a `mod tests`.
+
+- [ ] **Step 2: Replace the file contents with the macro**
+
+Write `src/standard.rs`:
 
 ```rust
-//! Counter-width abstraction for histogram bucket counts.
-//!
-//! The [`Count`] trait abstracts over the bucket counter width. It is
-//! implemented for `u32` and `u64`. The trait is sealed: it cannot be
-//! implemented outside this crate.
-//!
-//! [`AtomicCount`] is the matching atomic-primitive trait, mapped via the
-//! [`Count::Atomic`] associated type. It is implemented for `AtomicU32`
-//! (paired with `u32`) and `AtomicU64` (paired with `u64`).
+use std::collections::BTreeMap;
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
+use crate::{Bucket, Config, Count, Error, SparseHistogram};
+// SparseHistogram32 reference is added in Task 4; for now Histogram32 is commented out.
 
-mod private {
-    pub trait Sealed {}
+macro_rules! define_histogram {
+    ($name:ident, $iter:ident, $sparse:ident, $count:ty) => {
+        /// A histogram that uses plain counters for each bucket.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        pub struct $name {
+            pub(crate) config: Config,
+            pub(crate) buckets: Box<[$count]>,
+        }
+
+        impl $name {
+            pub fn new(grouping_power: u8, max_value_power: u8) -> Result<Self, Error> {
+                let config = Config::new(grouping_power, max_value_power)?;
+                Ok(Self::with_config(&config))
+            }
+
+            pub fn with_config(config: &Config) -> Self {
+                let buckets: Box<[$count]> =
+                    vec![<$count as Count>::ZERO; config.total_buckets()].into();
+                Self { config: *config, buckets }
+            }
+
+            pub fn from_buckets(
+                grouping_power: u8,
+                max_value_power: u8,
+                buckets: Vec<$count>,
+            ) -> Result<Self, Error> {
+                let config = Config::new(grouping_power, max_value_power)?;
+                if config.total_buckets() != buckets.len() {
+                    return Err(Error::IncompatibleParameters);
+                }
+                Ok(Self { config, buckets: buckets.into() })
+            }
+
+            pub fn increment(&mut self, value: u64) -> Result<(), Error> {
+                self.add(value, <$count as Count>::ONE)
+            }
+
+            pub fn add(&mut self, value: u64, count: $count) -> Result<(), Error> {
+                let index = self.config.value_to_index(value)?;
+                self.buckets[index] = self.buckets[index].wrapping_add(count);
+                Ok(())
+            }
+
+            pub fn as_slice(&self) -> &[$count] { &self.buckets }
+            pub fn as_mut_slice(&mut self) -> &mut [$count] { &mut self.buckets }
+
+            pub fn downsample(&self, grouping_power: u8) -> Result<Self, Error> {
+                if grouping_power >= self.config.grouping_power() {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut histogram = Self::new(grouping_power, self.config.max_value_power())?;
+                for (i, n) in self.as_slice().iter().enumerate() {
+                    if *n != <$count as Count>::ZERO {
+                        let val = self.config.index_to_lower_bound(i);
+                        histogram.add(val, *n)?;
+                    }
+                }
+                Ok(histogram)
+            }
+
+            pub fn checked_add(&self, other: &Self) -> Result<Self, Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = self.clone();
+                for (this, other) in result.buckets.iter_mut().zip(other.buckets.iter()) {
+                    *this = this.checked_add(*other).ok_or(Error::Overflow)?;
+                }
+                Ok(result)
+            }
+
+            pub fn wrapping_add(&self, other: &Self) -> Result<Self, Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = self.clone();
+                for (this, other) in result.buckets.iter_mut().zip(other.buckets.iter()) {
+                    *this = this.wrapping_add(*other);
+                }
+                Ok(result)
+            }
+
+            pub fn checked_sub(&self, other: &Self) -> Result<Self, Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = self.clone();
+                for (this, other) in result.buckets.iter_mut().zip(other.buckets.iter()) {
+                    *this = this.checked_sub(*other).ok_or(Error::Underflow)?;
+                }
+                Ok(result)
+            }
+
+            pub fn wrapping_sub(&self, other: &Self) -> Result<Self, Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = self.clone();
+                for (this, other) in result.buckets.iter_mut().zip(other.buckets.iter()) {
+                    *this = this.wrapping_sub(*other);
+                }
+                Ok(result)
+            }
+
+            pub fn iter(&self) -> $iter<'_> {
+                $iter { index: 0, histogram: self }
+            }
+
+            pub fn config(&self) -> Config { self.config }
+
+            // Inherent quantile / quantiles forwarders. Inherent dispatch
+            // works without trait-resolution ambiguity because the type
+            // is concrete (no generic parameter).
+            pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantiles(self, quantiles)
+            }
+
+            pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+        }
+
+        impl SampleQuantiles for $name {
+            fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                for q in quantiles {
+                    if !(0.0..=1.0).contains(q) {
+                        return Err(Error::InvalidQuantile);
+                    }
+                }
+                let total_count: u128 = self.buckets.iter().map(|v| v.as_u128()).sum();
+                if total_count == 0 { return Ok(None); }
+
+                let mut sorted: Vec<Quantile> = quantiles
+                    .iter().map(|&q| Quantile::new(q).unwrap()).collect();
+                sorted.sort();
+                sorted.dedup();
+
+                let mut min_idx = None;
+                let mut max_idx = None;
+                for (i, count) in self.buckets.iter().enumerate() {
+                    if *count != <$count as Count>::ZERO {
+                        if min_idx.is_none() { min_idx = Some(i); }
+                        max_idx = Some(i);
+                    }
+                }
+                let min_idx = min_idx.unwrap();
+                let max_idx = max_idx.unwrap();
+
+                let min = Bucket {
+                    count: self.buckets[min_idx].as_u128() as u64,
+                    range: self.config.index_to_range(min_idx),
+                };
+                let max = Bucket {
+                    count: self.buckets[max_idx].as_u128() as u64,
+                    range: self.config.index_to_range(max_idx),
+                };
+
+                let mut bucket_idx = 0;
+                let mut partial_sum = self.buckets[bucket_idx].as_u128();
+                let mut entries = BTreeMap::new();
+
+                for quantile in &sorted {
+                    let count = std::cmp::max(
+                        1, (quantile.as_f64() * total_count as f64).ceil() as u128,
+                    );
+                    loop {
+                        if partial_sum >= count {
+                            entries.insert(*quantile, Bucket {
+                                count: self.buckets[bucket_idx].as_u128() as u64,
+                                range: self.config.index_to_range(bucket_idx),
+                            });
+                            break;
+                        }
+                        if bucket_idx == (self.buckets.len() - 1) { break; }
+                        bucket_idx += 1;
+                        partial_sum += self.buckets[bucket_idx].as_u128();
+                    }
+                }
+
+                Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
+            }
+        }
+
+        impl<'a> IntoIterator for &'a $name {
+            type Item = Bucket;
+            type IntoIter = $iter<'a>;
+            fn into_iter(self) -> Self::IntoIter {
+                $iter { index: 0, histogram: self }
+            }
+        }
+
+        pub struct $iter<'a> {
+            index: usize,
+            histogram: &'a $name,
+        }
+        impl Iterator for $iter<'_> {
+            type Item = Bucket;
+            fn next(&mut self) -> Option<Bucket> {
+                if self.index >= self.histogram.buckets.len() { return None; }
+                let bucket = Bucket {
+                    count: self.histogram.buckets[self.index].as_u128() as u64,
+                    range: self.histogram.config.index_to_range(self.index),
+                };
+                self.index += 1;
+                Some(bucket)
+            }
+        }
+        impl ExactSizeIterator for $iter<'_> {
+            fn len(&self) -> usize {
+                self.histogram.buckets.len() - self.index
+            }
+        }
+        impl std::iter::FusedIterator for $iter<'_> {}
+
+        impl From<&$sparse> for $name {
+            fn from(other: &$sparse) -> Self {
+                let mut histogram = $name::with_config(&other.config);
+                for (index, count) in other.index.iter().zip(other.count.iter()) {
+                    histogram.buckets[*index as usize] = *count;
+                }
+                histogram
+            }
+        }
+    };
 }
 
-/// A counter type usable for histogram bucket counts.
-///
-/// Sealed: implemented only for `u32` and `u64` inside this crate.
-pub trait Count:
-    private::Sealed + Copy + Default + Eq + Ord + std::fmt::Debug + 'static
-{
-    /// The atomic-primitive counterpart used by `AtomicHistogram<Self>`.
-    type Atomic: AtomicCount<Value = Self>;
-
-    /// The additive identity for this counter type.
-    const ZERO: Self;
-    /// The multiplicative identity (used by `increment`).
-    const ONE: Self;
-
-    fn wrapping_add(self, other: Self) -> Self;
-    fn wrapping_sub(self, other: Self) -> Self;
-    fn checked_add(self, other: Self) -> Option<Self>;
-    fn checked_sub(self, other: Self) -> Option<Self>;
-
-    /// Widen to `u128` for partial-sum aggregation.
-    fn as_u128(self) -> u128;
-    /// Narrow from `u64`. Returns `None` if `v` exceeds the range of `Self`.
-    fn try_from_u64(v: u64) -> Option<Self>;
-}
-
-/// Atomic counterpart of a [`Count`] type.
-///
-/// Sealed: implemented only for `AtomicU32` and `AtomicU64` inside this crate.
-pub trait AtomicCount: private::Sealed {
-    type Value: Count<Atomic = Self>;
-
-    fn new(v: Self::Value) -> Self;
-    fn load_relaxed(&self) -> Self::Value;
-    fn store_relaxed(&self, v: Self::Value);
-    fn fetch_add_relaxed(&self, v: Self::Value);
-    fn swap_relaxed(&self, v: Self::Value) -> Self::Value;
-}
-
-impl private::Sealed for u32 {}
-impl private::Sealed for u64 {}
-impl private::Sealed for AtomicU32 {}
-impl private::Sealed for AtomicU64 {}
-
-impl Count for u32 {
-    type Atomic = AtomicU32;
-    const ZERO: Self = 0;
-    const ONE: Self = 1;
-
-    #[inline]
-    fn wrapping_add(self, other: Self) -> Self { u32::wrapping_add(self, other) }
-    #[inline]
-    fn wrapping_sub(self, other: Self) -> Self { u32::wrapping_sub(self, other) }
-    #[inline]
-    fn checked_add(self, other: Self) -> Option<Self> { u32::checked_add(self, other) }
-    #[inline]
-    fn checked_sub(self, other: Self) -> Option<Self> { u32::checked_sub(self, other) }
-    #[inline]
-    fn as_u128(self) -> u128 { self as u128 }
-    #[inline]
-    fn try_from_u64(v: u64) -> Option<Self> { u32::try_from(v).ok() }
-}
-
-impl Count for u64 {
-    type Atomic = AtomicU64;
-    const ZERO: Self = 0;
-    const ONE: Self = 1;
-
-    #[inline]
-    fn wrapping_add(self, other: Self) -> Self { u64::wrapping_add(self, other) }
-    #[inline]
-    fn wrapping_sub(self, other: Self) -> Self { u64::wrapping_sub(self, other) }
-    #[inline]
-    fn checked_add(self, other: Self) -> Option<Self> { u64::checked_add(self, other) }
-    #[inline]
-    fn checked_sub(self, other: Self) -> Option<Self> { u64::checked_sub(self, other) }
-    #[inline]
-    fn as_u128(self) -> u128 { self as u128 }
-    #[inline]
-    fn try_from_u64(v: u64) -> Option<Self> { Some(v) }
-}
-
-impl AtomicCount for AtomicU32 {
-    type Value = u32;
-    #[inline]
-    fn new(v: u32) -> Self { AtomicU32::new(v) }
-    #[inline]
-    fn load_relaxed(&self) -> u32 { self.load(Ordering::Relaxed) }
-    #[inline]
-    fn store_relaxed(&self, v: u32) { self.store(v, Ordering::Relaxed) }
-    #[inline]
-    fn fetch_add_relaxed(&self, v: u32) { self.fetch_add(v, Ordering::Relaxed); }
-    #[inline]
-    fn swap_relaxed(&self, v: u32) -> u32 { self.swap(v, Ordering::Relaxed) }
-}
-
-impl AtomicCount for AtomicU64 {
-    type Value = u64;
-    #[inline]
-    fn new(v: u64) -> Self { AtomicU64::new(v) }
-    #[inline]
-    fn load_relaxed(&self) -> u64 { self.load(Ordering::Relaxed) }
-    #[inline]
-    fn store_relaxed(&self, v: u64) { self.store(v, Ordering::Relaxed) }
-    #[inline]
-    fn fetch_add_relaxed(&self, v: u64) { self.fetch_add(v, Ordering::Relaxed); }
-    #[inline]
-    fn swap_relaxed(&self, v: u64) -> u64 { self.swap(v, Ordering::Relaxed) }
-}
+define_histogram!(Histogram, Iter, SparseHistogram, u64);
+// define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);  // uncommented in Task 4
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngExt;
 
+    // ===== Existing u64 tests preserved =====
+
+    #[cfg(target_pointer_width = "64")]
     #[test]
-    fn u32_const_values() {
-        assert_eq!(<u32 as Count>::ZERO, 0u32);
-        assert_eq!(<u32 as Count>::ONE, 1u32);
+    fn size() {
+        assert_eq!(std::mem::size_of::<Histogram>(), 48);
     }
 
     #[test]
-    fn u64_const_values() {
-        assert_eq!(<u64 as Count>::ZERO, 0u64);
-        assert_eq!(<u64 as Count>::ONE, 1u64);
+    fn quantiles() {
+        let mut histogram = Histogram::new(7, 64).unwrap();
+        assert_eq!(histogram.quantile(0.5).unwrap(), None);
+        for i in 0..=100 {
+            let _ = histogram.increment(i);
+        }
+        assert_eq!(histogram.quantile(0.5).unwrap().unwrap().get(&Quantile::new(0.5).unwrap()).unwrap().end(), 50);
+        assert_eq!(histogram.quantile(0.99).unwrap().unwrap().get(&Quantile::new(0.99).unwrap()).unwrap().end(), 99);
+        assert_eq!(histogram.quantile(-1.0), Err(Error::InvalidQuantile));
+        assert_eq!(histogram.quantile(1.01), Err(Error::InvalidQuantile));
     }
 
     #[test]
-    fn u32_wrapping_arithmetic() {
-        assert_eq!(<u32 as Count>::wrapping_add(u32::MAX, 1), 0);
-        assert_eq!(<u32 as Count>::wrapping_sub(0, 1), u32::MAX);
+    fn min() {
+        let mut histogram = Histogram::new(7, 64).unwrap();
+        assert_eq!(histogram.quantile(0.0).unwrap(), None);
+        let _ = histogram.increment(10);
+        assert_eq!(histogram.quantile(0.0).unwrap().unwrap().get(&Quantile::new(0.0).unwrap()).unwrap().end(), 10);
+        let _ = histogram.increment(4);
+        assert_eq!(histogram.quantile(0.0).unwrap().unwrap().get(&Quantile::new(0.0).unwrap()).unwrap().end(), 4);
     }
 
     #[test]
-    fn u32_checked_arithmetic() {
-        assert_eq!(<u32 as Count>::checked_add(u32::MAX, 1), None);
-        assert_eq!(<u32 as Count>::checked_sub(0u32, 1), None);
-        assert_eq!(<u32 as Count>::checked_add(1u32, 1), Some(2));
+    fn downsample() {
+        let mut histogram = Histogram::new(8, 32).unwrap();
+        let mut vals: Vec<u64> = Vec::with_capacity(10000);
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(42);
+        for _ in 0..vals.capacity() {
+            let v: u64 = rng.random_range(1..2_u64.pow(histogram.config.max_value_power() as u32));
+            vals.push(v);
+            let _ = histogram.increment(v);
+        }
+        vals.sort();
+        let h = histogram.clone();
+        let grouping_power = histogram.config.grouping_power();
+        for factor in 1..grouping_power {
+            let error = histogram.config.error();
+            for p in &[0.5, 0.9, 0.99, 0.999, 1.0] {
+                let v = vals[((*p * (vals.len() as f64)) as usize) - 1];
+                let q = histogram.quantile(*p).unwrap().unwrap();
+                let vhist = q.get(&Quantile::new(*p).unwrap()).unwrap().end();
+                let e = (v.abs_diff(vhist) as f64) * 100.0 / (v as f64);
+                assert!(e < error);
+            }
+            histogram = h.downsample(grouping_power - factor).unwrap();
+        }
+    }
+
+    fn build_histograms() -> (Histogram, Histogram, Histogram, Histogram) {
+        let mut h1 = Histogram::new(1, 3).unwrap();
+        let mut h2 = Histogram::new(1, 3).unwrap();
+        let mut h3 = Histogram::new(1, 3).unwrap();
+        let h4 = Histogram::new(7, 32).unwrap();
+        for i in 0..h1.config().total_buckets() {
+            h1.as_mut_slice()[i] = 1;
+            h2.as_mut_slice()[i] = 1;
+            h3.as_mut_slice()[i] = u64::MAX;
+        }
+        (h1, h2, h3, h4)
     }
 
     #[test]
-    fn try_from_u64_narrowing() {
-        assert_eq!(<u32 as Count>::try_from_u64(42), Some(42u32));
-        assert_eq!(<u32 as Count>::try_from_u64(u32::MAX as u64), Some(u32::MAX));
-        assert_eq!(<u32 as Count>::try_from_u64(u32::MAX as u64 + 1), None);
-        assert_eq!(<u64 as Count>::try_from_u64(u64::MAX), Some(u64::MAX));
+    fn checked_add() {
+        let (h, h_good, h_overflow, h_mismatch) = build_histograms();
+        assert_eq!(h.checked_add(&h_mismatch), Err(Error::IncompatibleParameters));
+        let r = h.checked_add(&h_good).unwrap();
+        assert_eq!(r.as_slice(), &[2, 2, 2, 2, 2, 2]);
+        assert_eq!(h.checked_add(&h_overflow), Err(Error::Overflow));
     }
 
     #[test]
-    fn as_u128_widening() {
-        assert_eq!(<u32 as Count>::as_u128(u32::MAX), u32::MAX as u128);
-        assert_eq!(<u64 as Count>::as_u128(u64::MAX), u64::MAX as u128);
+    fn wrapping_add() {
+        let (h, h_good, h_overflow, h_mismatch) = build_histograms();
+        assert_eq!(h.wrapping_add(&h_mismatch), Err(Error::IncompatibleParameters));
+        let r = h.wrapping_add(&h_good).unwrap();
+        assert_eq!(r.as_slice(), &[2, 2, 2, 2, 2, 2]);
+        let r = h.wrapping_add(&h_overflow).unwrap();
+        assert_eq!(r.as_slice(), &[0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
-    fn atomic_u32_basic() {
-        let a = <AtomicU32 as AtomicCount>::new(0);
-        a.fetch_add_relaxed(5);
-        assert_eq!(a.load_relaxed(), 5);
-        let prev = a.swap_relaxed(10);
-        assert_eq!(prev, 5);
-        assert_eq!(a.load_relaxed(), 10);
+    fn checked_sub() {
+        let (h, h_good, h_overflow, h_mismatch) = build_histograms();
+        assert_eq!(h.checked_sub(&h_mismatch), Err(Error::IncompatibleParameters));
+        let r = h.checked_sub(&h_good).unwrap();
+        assert_eq!(r.as_slice(), &[0, 0, 0, 0, 0, 0]);
+        assert_eq!(h.checked_sub(&h_overflow), Err(Error::Underflow));
     }
 
     #[test]
-    fn atomic_u64_basic() {
-        let a = <AtomicU64 as AtomicCount>::new(0);
-        a.fetch_add_relaxed(5);
-        assert_eq!(a.load_relaxed(), 5);
+    fn wrapping_sub() {
+        let (h, h_good, h_overflow, h_mismatch) = build_histograms();
+        assert_eq!(h.wrapping_sub(&h_mismatch), Err(Error::IncompatibleParameters));
+        let r = h.wrapping_sub(&h_good).unwrap();
+        assert_eq!(r.as_slice(), &[0, 0, 0, 0, 0, 0]);
+        let r = h.wrapping_sub(&h_overflow).unwrap();
+        assert_eq!(r.as_slice(), &[2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn from_buckets() {
+        let mut histogram = Histogram::new(8, 32).unwrap();
+        for i in 0..=100 {
+            let _ = histogram.increment(i);
+        }
+        let buckets = histogram.as_slice();
+        let constructed = Histogram::from_buckets(8, 32, buckets.to_vec()).unwrap();
+        assert!(constructed == histogram);
     }
 }
 ```
 
-- [ ] **Step 2: Wire the module into `src/lib.rs`**
+Note: the existing `mod tests` block in the original file referenced the deprecated `percentile`/`percentiles` methods. The replacement above maps those tests to use `quantile`/`quantiles` (same semantic content, the new name). The `from_buckets`, arithmetic (`checked_add`/`wrapping_add`/`checked_sub`/`wrapping_sub`), `downsample`, `min`, and `quantiles` tests are preserved.
 
-Edit `src/lib.rs` — add `mod count;` to the module list (alphabetical) and add `pub use count::{Count, AtomicCount};` to the re-export block.
+- [ ] **Step 3: Update `src/quantile.rs` and `src/lib.rs` to use new method names**
 
-Find the existing module list (after the `//! # Background` doc comment):
+The existing tests in `src/quantile.rs` and the doctest in `src/lib.rs` already use `quantile` / `quantiles` (introduced in v1.2). They should compile against the macro-emitted concrete `Histogram` without any turbofish — verify with `cargo test --doc` and `cargo test --lib quantile::`.
 
-```rust
-mod atomic;
-mod bucket;
-mod config;
-mod cumulative;
-mod errors;
-mod quantile;
-mod sparse;
-mod standard;
-```
+If anything fails, the failing call site will need to be updated to use the new method name. There should be nothing to change in practice because the existing tests already use trait names matching the macro emission.
 
-Replace with:
-
-```rust
-mod atomic;
-mod bucket;
-mod config;
-mod count;
-mod cumulative;
-mod errors;
-mod quantile;
-mod sparse;
-mod standard;
-```
-
-Find the existing re-exports:
-
-```rust
-pub use atomic::AtomicHistogram;
-pub use bucket::Bucket;
-pub use config::Config;
-pub use cumulative::CumulativeROHistogram;
-pub use errors::Error;
-pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};
-pub use sparse::SparseHistogram;
-pub use standard::Histogram;
-```
-
-Replace with:
-
-```rust
-pub use atomic::AtomicHistogram;
-pub use bucket::Bucket;
-pub use config::Config;
-pub use count::{AtomicCount, Count};
-pub use cumulative::CumulativeROHistogram;
-pub use errors::Error;
-pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};
-pub use sparse::SparseHistogram;
-pub use standard::Histogram;
-```
-
-- [ ] **Step 3: Build and run tests**
-
-Run: `cargo test count::`
-Expected: 8 tests pass (the unit tests in the new module).
+- [ ] **Step 4: Build + run existing tests**
 
 Run: `cargo build`
-Expected: clean build, no warnings.
+Expected: clean.
 
-- [ ] **Step 4: Commit**
+Run: `cargo test --lib`
+Expected: existing tests still pass (`Histogram` is byte-identical in shape to before the macroification).
+
+- [ ] **Step 5: cargo fmt**
+
+Run: `cargo fmt && cargo fmt --check`
+
+- [ ] **Step 6: Commit (intermediate — Histogram only)**
 
 ```bash
-git add src/count.rs src/lib.rs
-git commit -m "add Count and AtomicCount sealed traits
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/standard.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "macroify Histogram
 
-Introduces the counter-width abstraction used by the upcoming generic
-histogram types. Implemented for u32 and u64 with their atomic counterparts."
+Wrap Histogram, Iter, SampleQuantiles impl, IntoIterator impl, and
+From<&SparseHistogram> impl in define_histogram! macro. Invoke for
+Histogram (u64) only; Histogram32 invocation is commented out and
+follows in Task 4 once SparseHistogram32 exists.
+
+Drops deprecated percentile/percentiles inherent methods; users
+migrate to quantile/quantiles or to the SampleQuantiles trait."
 ```
 
----
+(No Co-Authored-By trailer.)
 
-## Task 2: Generalize `Histogram` to `Histogram<C: Count = u64>`
+## Task 3: Macroify `AtomicHistogram` and prepare `AtomicHistogram32`
 
 **Files:**
-- Modify: `src/standard.rs` (whole-file refactor)
-
-This is the largest task. It generalizes the dense `Histogram` type and all its methods, including the `SampleQuantiles` impl, the iterator, and the `From<&SparseHistogram>` impl. Existing tests (which use the default `<u64>`) must continue passing.
+- Modify: `src/atomic.rs`
 
 - [ ] **Step 1: Read the current file**
 
-Run: read `src/standard.rs` end-to-end so you know exactly what's there.
+- [ ] **Step 2: Replace contents with the macro**
 
-- [ ] **Step 2: Apply the generalization**
+```rust
+use crate::config::Config;
+use crate::{AtomicCount, Count, Error, Histogram};
+// Histogram32 reference is used after Task 4 uncomments the second invocation.
+use core::sync::atomic::{AtomicU32, AtomicU64};
 
-Replace the contents of `src/standard.rs` (preserve test functions; the impl-block changes are mechanical):
+macro_rules! define_atomic_histogram {
+    ($name:ident, $count:ty, $atomic:ty, $hist:ident) => {
+        /// A histogram that uses atomic counters for each bucket.
+        ///
+        /// Unlike the non-atomic variant, it cannot be used directly to report
+        /// percentiles. Instead, a snapshot must be taken which captures the
+        /// state of the histogram at a point in time.
+        pub struct $name {
+            pub(crate) config: Config,
+            pub(crate) buckets: Box<[$atomic]>,
+        }
 
-Key changes to make (a complete diff would be hundreds of lines — apply these patterns throughout):
+        impl $name {
+            pub fn new(grouping_power: u8, max_value_power: u8) -> Result<Self, Error> {
+                let config = Config::new(grouping_power, max_value_power)?;
+                Ok(Self::with_config(&config))
+            }
 
-a) Imports — add `use crate::Count;` near the top.
+            pub fn with_config(config: &Config) -> Self {
+                let mut buckets = Vec::with_capacity(config.total_buckets());
+                buckets.resize_with(config.total_buckets(), || {
+                    <$atomic as AtomicCount>::new(<$count as Count>::ZERO)
+                });
+                Self { config: *config, buckets: buckets.into() }
+            }
 
-b) Struct: `pub struct Histogram` → `pub struct Histogram<C: Count = u64>` with `buckets: Box<[C]>`.
+            pub fn increment(&self, value: u64) -> Result<(), Error> {
+                self.add(value, <$count as Count>::ONE)
+            }
 
-c) `impl Histogram` → `impl<C: Count> Histogram<C>` for all method blocks.
+            pub fn add(&self, value: u64, count: $count) -> Result<(), Error> {
+                let index = self.config.value_to_index(value)?;
+                self.buckets[index].fetch_add_relaxed(count);
+                Ok(())
+            }
 
-d) Constructors:
-   - `with_config`: `vec![0; n]` → `vec![C::ZERO; n]`.
-   - `from_buckets`: parameter `buckets: Vec<u64>` → `buckets: Vec<C>`.
+            pub fn config(&self) -> Config { self.config }
 
-e) `increment`: `self.add(value, 1)` → `self.add(value, C::ONE)`.
+            pub fn load(&self) -> $hist {
+                let buckets: Vec<$count> =
+                    self.buckets.iter().map(|b| b.load_relaxed()).collect();
+                $hist { config: self.config, buckets: buckets.into() }
+            }
+        }
 
-f) `add`: signature changes to `count: C`. The body line `self.buckets[index].wrapping_add(count)` already works because we're calling the trait method (it dispatches to `C::wrapping_add`).
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    .field("config", &self.config)
+                    .finish()
+            }
+        }
+    };
+}
 
-g) `as_slice` / `as_mut_slice`: return `&[C]` / `&mut [C]`.
+define_atomic_histogram!(AtomicHistogram, u64, AtomicU64, Histogram);
+// define_atomic_histogram!(AtomicHistogram32, u32, AtomicU32, Histogram32);  // uncommented in Task 4
 
-h) `checked_add`/`wrapping_add`/`checked_sub`/`wrapping_sub`: signature takes `&Histogram<C>`, returns `Result<Histogram<C>, Error>`. Bodies are unchanged because we call trait methods on `*this` and `*other`.
+#[cfg(target_has_atomic = "64")]
+impl AtomicHistogram {
+    /// Drains the bucket values into a new `Histogram`.
+    pub fn drain(&self) -> Histogram {
+        let buckets: Vec<u64> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
+        Histogram { config: self.config, buckets: buckets.into() }
+    }
+}
 
-i) `downsample`: same — returns `Histogram<C>`. The `histogram.add(val, *n)?` line works as-is (`*n` is `C`).
+// AtomicHistogram32 drain block — uncomment in Task 4.
+// #[cfg(target_has_atomic = "32")]
+// impl AtomicHistogram32 {
+//     pub fn drain(&self) -> Histogram32 {
+//         let buckets: Vec<u32> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
+//         Histogram32 { config: self.config, buckets: buckets.into() }
+//     }
+// }
 
-j) `config`: unchanged (returns `Config`, which is non-generic).
+#[cfg(test)]
+mod tests {
+    use crate::*;
 
-k) `iter`: returns `Iter<'_, C>`.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn size() {
+        assert_eq!(std::mem::size_of::<AtomicHistogram>(), 48);
+    }
 
-l) Deprecated `percentile`/`percentiles`: keep as-is, but add `<C: Count>` bound on the impl block. Body uses `SampleQuantiles::quantiles` which we'll generalize next.
+    #[cfg(target_has_atomic = "64")]
+    #[test]
+    fn drain() {
+        let histogram = AtomicHistogram::new(7, 64).unwrap();
+        for i in 0..=100 {
+            let _ = histogram.increment(i);
+        }
+        let snapshot = histogram.drain();
+        let result = snapshot.quantile(0.50).unwrap().unwrap();
+        assert_eq!(
+            result.get(&Quantile::new(0.50).unwrap()).unwrap().end(),
+            50,
+        );
+        histogram.increment(1000).unwrap();
+        let snapshot = histogram.drain();
+        let result = snapshot.quantile(0.50).unwrap().unwrap();
+        assert_eq!(
+            result.get(&Quantile::new(0.50).unwrap()).unwrap().end(),
+            1003,
+        );
+    }
 
-m) `SampleQuantiles for Histogram`: change to `impl<C: Count> SampleQuantiles for Histogram<C>`. In the body:
-   - `let total_count: u128 = self.buckets.iter().map(|v| *v as u128).sum();` → `... .map(|v| v.as_u128()).sum();`
-   - In the loop: `*count > 0` → `*count != C::ZERO` (where `count` is the loop variable). Wait — looking at the actual code, the comparison is `count > 0`. Replace with `*count != C::ZERO`. Actually re-checking: the variable is `count` referring to `&u64`, comparison is `*count > 0` in some places, `count > 0` in others. Convert all numeric literal comparisons to `C::ZERO`.
-   - When constructing `Bucket { count: self.buckets[min_idx], ... }`: widen via `count: self.buckets[min_idx].as_u128() as u64`. Same for max_idx and inside the quantile loop.
-   - The `partial_sum` uses `self.buckets[bucket_idx] as u128` → `self.buckets[bucket_idx].as_u128()`.
+    #[test]
+    fn quantiles() {
+        let histogram = AtomicHistogram::new(7, 64).unwrap();
+        let qs = [0.25, 0.50, 0.75, 0.90, 0.99];
+        assert_eq!(histogram.load().quantiles(&qs).unwrap(), None);
+        for i in 0..=100 {
+            let _ = histogram.increment(i);
+            let result = histogram.load().quantile(0.0).unwrap().unwrap();
+            assert_eq!(result.get(&Quantile::new(0.0).unwrap()).unwrap().end(), 0);
+            let result = histogram.load().quantile(1.0).unwrap().unwrap();
+            assert_eq!(result.get(&Quantile::new(1.0).unwrap()).unwrap().end(), i);
+        }
+        for q in qs {
+            let result = histogram.load().quantile(q).unwrap().unwrap();
+            let bucket = result.get(&Quantile::new(q).unwrap()).unwrap();
+            assert_eq!(bucket.end(), (q * 100.0) as u64);
+        }
+    }
+}
+```
 
-n) `Iter` struct: `pub struct Iter<'a, C: Count = u64>` with field `histogram: &'a Histogram<C>`. The `next` impl widens to `u64` for the `Bucket`: `count: self.histogram.buckets[self.index].as_u128() as u64`.
+- [ ] **Step 3: Build + run existing tests**
 
-o) `IntoIterator for &'a Histogram` → `impl<'a, C: Count> IntoIterator for &'a Histogram<C>` with `IntoIter = Iter<'a, C>`.
+Run: `cargo build && cargo test --lib atomic::`
+Expected: existing atomic tests still pass.
 
-p) `From<&SparseHistogram> for Histogram` → `impl<C: Count> From<&SparseHistogram<C>> for Histogram<C>`.
+- [ ] **Step 4: cargo fmt**
 
-The `#[cfg(target_pointer_width = "64")] fn size()` test gates on `Histogram` (default `<u64>`) — keep it as-is, it tests the default-instantiation size.
+- [ ] **Step 5: Commit**
 
-- [ ] **Step 3: Verify the file compiles**
+```bash
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/atomic.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "macroify AtomicHistogram
+
+Wrap AtomicHistogram in define_atomic_histogram! macro. Invoke for
+AtomicHistogram (u64) only; AtomicHistogram32 invocation and drain
+impl follow in Task 4 once Histogram32 exists in standard.rs."
+```
+
+## Task 4: Macroify `SparseHistogram` and finalize `Histogram32` / `AtomicHistogram32`
+
+**Files:**
+- Modify: `src/sparse.rs`
+- Modify: `src/standard.rs` (uncomment second macro invocation; add SparseHistogram32 import)
+- Modify: `src/atomic.rs` (uncomment second macro invocation + AtomicHistogram32 drain impl)
+
+This task closes the `Histogram` ↔ `SparseHistogram` cycle for both u32 and u64 families.
+
+- [ ] **Step 1: Read `src/sparse.rs` end-to-end**
+
+- [ ] **Step 2: Replace `src/sparse.rs` with the macro**
+
+```rust
+use std::collections::BTreeMap;
+use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
+use crate::{Bucket, Config, Count, Error, Histogram, Histogram32};
+
+macro_rules! define_sparse_histogram {
+    ($name:ident, $iter:ident, $hist:ident, $count:ty) => {
+        /// A sparse, columnar representation of a histogram.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        pub struct $name {
+            pub(crate) config: Config,
+            pub(crate) index: Vec<u32>,
+            pub(crate) count: Vec<$count>,
+        }
+
+        impl $name {
+            pub fn new(grouping_power: u8, max_value_power: u8) -> Result<Self, Error> {
+                let config = Config::new(grouping_power, max_value_power)?;
+                Ok(Self::with_config(&config))
+            }
+
+            pub fn with_config(config: &Config) -> Self {
+                Self { config: *config, index: Vec::new(), count: Vec::new() }
+            }
+
+            pub fn from_parts(
+                config: Config,
+                index: Vec<u32>,
+                count: Vec<$count>,
+            ) -> Result<Self, Error> {
+                if index.len() != count.len() {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let total_buckets = config.total_buckets();
+                let mut prev = None;
+                for &idx in &index {
+                    if idx as usize >= total_buckets { return Err(Error::OutOfRange); }
+                    if let Some(p) = prev { if idx <= p { return Err(Error::IncompatibleParameters); } }
+                    prev = Some(idx);
+                }
+                for &c in &count {
+                    if c == <$count as Count>::ZERO {
+                        return Err(Error::IncompatibleParameters);
+                    }
+                }
+                Ok(Self { config, index, count })
+            }
+
+            pub fn into_parts(self) -> (Config, Vec<u32>, Vec<$count>) {
+                (self.config, self.index, self.count)
+            }
+
+            pub fn config(&self) -> Config { self.config }
+            pub fn index(&self) -> &[u32] { &self.index }
+            pub fn count(&self) -> &[$count] { &self.count }
+
+            fn add_bucket(&mut self, idx: u32, n: $count) {
+                if n != <$count as Count>::ZERO {
+                    self.index.push(idx);
+                    self.count.push(n);
+                }
+            }
+
+            #[allow(clippy::comparison_chain)]
+            pub fn checked_add(&self, h: &Self) -> Result<Self, Error> {
+                if self.config != h.config { return Err(Error::IncompatibleParameters); }
+                let mut histogram = Self::with_config(&self.config);
+                let (mut i, mut j) = (0, 0);
+                while i < self.index.len() && j < h.index.len() {
+                    let (k1, v1) = (self.index[i], self.count[i]);
+                    let (k2, v2) = (h.index[j], h.count[j]);
+                    if k1 == k2 {
+                        let v = v1.checked_add(v2).ok_or(Error::Overflow)?;
+                        histogram.add_bucket(k1, v);
+                        (i, j) = (i + 1, j + 1);
+                    } else if k1 < k2 {
+                        histogram.add_bucket(k1, v1); i += 1;
+                    } else {
+                        histogram.add_bucket(k2, v2); j += 1;
+                    }
+                }
+                if i < self.index.len() {
+                    histogram.index.extend(&self.index[i..]);
+                    histogram.count.extend(&self.count[i..]);
+                }
+                if j < h.index.len() {
+                    histogram.index.extend(&h.index[j..]);
+                    histogram.count.extend(&h.count[j..]);
+                }
+                Ok(histogram)
+            }
+
+            #[allow(clippy::comparison_chain)]
+            pub fn wrapping_add(&self, h: &Self) -> Result<Self, Error> {
+                if self.config != h.config { return Err(Error::IncompatibleParameters); }
+                let mut histogram = Self::with_config(&self.config);
+                let (mut i, mut j) = (0, 0);
+                while i < self.index.len() && j < h.index.len() {
+                    let (k1, v1) = (self.index[i], self.count[i]);
+                    let (k2, v2) = (h.index[j], h.count[j]);
+                    if k1 == k2 {
+                        histogram.add_bucket(k1, v1.wrapping_add(v2));
+                        (i, j) = (i + 1, j + 1);
+                    } else if k1 < k2 {
+                        histogram.add_bucket(k1, v1); i += 1;
+                    } else {
+                        histogram.add_bucket(k2, v2); j += 1;
+                    }
+                }
+                if i < self.index.len() {
+                    histogram.index.extend(&self.index[i..]);
+                    histogram.count.extend(&self.count[i..]);
+                }
+                if j < h.index.len() {
+                    histogram.index.extend(&h.index[j..]);
+                    histogram.count.extend(&h.count[j..]);
+                }
+                Ok(histogram)
+            }
+
+            #[allow(clippy::comparison_chain)]
+            pub fn checked_sub(&self, h: &Self) -> Result<Self, Error> {
+                if self.config != h.config { return Err(Error::IncompatibleParameters); }
+                let mut histogram = Self::with_config(&self.config);
+                let (mut i, mut j) = (0, 0);
+                while i < self.index.len() && j < h.index.len() {
+                    let (k1, v1) = (self.index[i], self.count[i]);
+                    let (k2, v2) = (h.index[j], h.count[j]);
+                    if k1 == k2 {
+                        let v = v1.checked_sub(v2).ok_or(Error::Underflow)?;
+                        if v != <$count as Count>::ZERO { histogram.add_bucket(k1, v); }
+                        (i, j) = (i + 1, j + 1);
+                    } else if k1 < k2 {
+                        histogram.add_bucket(k1, v1); i += 1;
+                    } else {
+                        return Err(Error::InvalidSubset);
+                    }
+                }
+                if j < h.index.len() { return Err(Error::InvalidSubset); }
+                if i < self.index.len() {
+                    histogram.index.extend(&self.index[i..]);
+                    histogram.count.extend(&self.count[i..]);
+                }
+                Ok(histogram)
+            }
+
+            #[allow(clippy::comparison_chain)]
+            pub fn wrapping_sub(&self, h: &Self) -> Result<Self, Error> {
+                if self.config != h.config { return Err(Error::IncompatibleParameters); }
+                let mut histogram = Self::with_config(&self.config);
+                let (mut i, mut j) = (0, 0);
+                while i < self.index.len() && j < h.index.len() {
+                    let (k1, v1) = (self.index[i], self.count[i]);
+                    let (k2, v2) = (h.index[j], h.count[j]);
+                    if k1 == k2 {
+                        histogram.add_bucket(k1, v1.wrapping_sub(v2));
+                        (i, j) = (i + 1, j + 1);
+                    } else if k1 < k2 {
+                        histogram.add_bucket(k1, v1); i += 1;
+                    } else {
+                        return Err(Error::InvalidSubset);
+                    }
+                }
+                if i < self.index.len() {
+                    histogram.index.extend(&self.index[i..]);
+                    histogram.count.extend(&self.count[i..]);
+                }
+                if j < h.index.len() { return Err(Error::InvalidSubset); }
+                Ok(histogram)
+            }
+
+            pub fn downsample(&self, grouping_power: u8) -> Result<Self, Error> {
+                if grouping_power >= self.config.grouping_power() {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let config = Config::new(grouping_power, self.config.max_value_power())?;
+                let mut histogram = Self::with_config(&config);
+                let mut aggregating_idx: u32 = 0;
+                let mut aggregating_count: $count = <$count as Count>::ZERO;
+                for (idx, n) in self.index.iter().zip(self.count.iter()) {
+                    let new_idx = config
+                        .value_to_index(self.config.index_to_lower_bound(*idx as usize))?
+                        as u32;
+                    if new_idx == aggregating_idx {
+                        aggregating_count = aggregating_count.wrapping_add(*n);
+                        continue;
+                    }
+                    histogram.add_bucket(aggregating_idx, aggregating_count);
+                    aggregating_idx = new_idx;
+                    aggregating_count = *n;
+                }
+                histogram.add_bucket(aggregating_idx, aggregating_count);
+                Ok(histogram)
+            }
+
+            pub fn iter(&self) -> $iter<'_> {
+                $iter { index: 0, histogram: self }
+            }
+
+            pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantiles(self, quantiles)
+            }
+            pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+        }
+
+        impl SampleQuantiles for $name {
+            fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                for q in quantiles {
+                    if !(0.0..=1.0).contains(q) {
+                        return Err(Error::InvalidQuantile);
+                    }
+                }
+                let total_count: u128 = self.count.iter().map(|v| v.as_u128()).sum();
+                if total_count == 0 { return Ok(None); }
+
+                let mut sorted: Vec<Quantile> = quantiles
+                    .iter().map(|&q| Quantile::new(q).unwrap()).collect();
+                sorted.sort();
+                sorted.dedup();
+
+                let min = Bucket {
+                    count: self.count[0].as_u128() as u64,
+                    range: self.config.index_to_range(self.index[0] as usize),
+                };
+                let last = self.index.len() - 1;
+                let max = Bucket {
+                    count: self.count[last].as_u128() as u64,
+                    range: self.config.index_to_range(self.index[last] as usize),
+                };
+
+                let mut idx = 0;
+                let mut partial_sum = self.count[0].as_u128();
+                let mut entries = BTreeMap::new();
+
+                for quantile in &sorted {
+                    let count = std::cmp::max(
+                        1, (quantile.as_f64() * total_count as f64).ceil() as u128,
+                    );
+                    loop {
+                        if partial_sum >= count {
+                            entries.insert(*quantile, Bucket {
+                                count: self.count[idx].as_u128() as u64,
+                                range: self.config.index_to_range(self.index[idx] as usize),
+                            });
+                            break;
+                        }
+                        if idx == (self.index.len() - 1) { break; }
+                        idx += 1;
+                        partial_sum += self.count[idx].as_u128();
+                    }
+                }
+                Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
+            }
+        }
+
+        impl<'a> IntoIterator for &'a $name {
+            type Item = Bucket;
+            type IntoIter = $iter<'a>;
+            fn into_iter(self) -> Self::IntoIter {
+                $iter { index: 0, histogram: self }
+            }
+        }
+
+        pub struct $iter<'a> {
+            index: usize,
+            histogram: &'a $name,
+        }
+        impl Iterator for $iter<'_> {
+            type Item = Bucket;
+            fn next(&mut self) -> Option<Bucket> {
+                if self.index >= self.histogram.index.len() { return None; }
+                let bucket = Bucket {
+                    count: self.histogram.count[self.index].as_u128() as u64,
+                    range: self.histogram
+                        .config
+                        .index_to_range(self.histogram.index[self.index] as usize),
+                };
+                self.index += 1;
+                Some(bucket)
+            }
+        }
+        impl ExactSizeIterator for $iter<'_> {
+            fn len(&self) -> usize {
+                self.histogram.index.len() - self.index
+            }
+        }
+        impl std::iter::FusedIterator for $iter<'_> {}
+
+        impl From<&$hist> for $name {
+            fn from(histogram: &$hist) -> Self {
+                let mut index = Vec::new();
+                let mut count = Vec::new();
+                for (idx, n) in histogram.as_slice().iter().enumerate() {
+                    if *n != <$count as Count>::ZERO {
+                        index.push(idx as u32);
+                        count.push(*n);
+                    }
+                }
+                Self { config: histogram.config(), index, count }
+            }
+        }
+    };
+}
+
+define_sparse_histogram!(SparseHistogram, SparseIter, Histogram, u64);
+define_sparse_histogram!(SparseHistogram32, SparseIter32, Histogram32, u32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use rand::RngExt;
+    use crate::standard::Histogram;
+
+    // ===== Existing tests preserved (u64) =====
+    // [keep the existing checked_add, wrapping_add, checked_sub, wrapping_sub,
+    //  wrapping_add_overflow, percentiles (renamed quantiles), min,
+    //  compare_histograms, snapshot, downsample tests verbatim — they all
+    //  reference SparseHistogram (u64) which still exists]
+
+    // Add new u32-targeted tests at the end:
+
+    #[test]
+    fn from_parts_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let h = SparseHistogram32::from_parts(config, vec![1, 3, 5], vec![6u32, 12, 7]).unwrap();
+        assert_eq!(h.index(), &[1, 3, 5]);
+        assert_eq!(h.count(), &[6u32, 12, 7]);
+    }
+
+    #[test]
+    fn checked_add_u32_overflow() {
+        let config = Config::new(7, 32).unwrap();
+        let h1 = SparseHistogram32::from_parts(config, vec![1], vec![u32::MAX]).unwrap();
+        let h2 = SparseHistogram32::from_parts(config, vec![1], vec![1u32]).unwrap();
+        assert_eq!(h1.checked_add(&h2), Err(Error::Overflow));
+    }
+
+    #[test]
+    fn from_histogram_u32() {
+        let mut h = Histogram32::new(7, 64).unwrap();
+        h.increment(1).unwrap();
+        h.increment(5).unwrap();
+        h.increment(100).unwrap();
+        let s = SparseHistogram32::from(&h);
+        assert_eq!(s.count().len(), 3);
+    }
+}
+```
+
+(For the existing u64 tests, copy the bodies verbatim from the original `src/sparse.rs` test module.)
+
+- [ ] **Step 3: In `src/standard.rs`, uncomment the `Histogram32` line**
+
+Find `// define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);  // uncommented in Task 4` and uncomment.
+
+Also update the import line at the top to include `SparseHistogram32`:
+
+```rust
+use crate::{Bucket, Config, Count, Error, SparseHistogram, SparseHistogram32};
+```
+
+- [ ] **Step 4: In `src/atomic.rs`, uncomment the `AtomicHistogram32` line and the impl block**
+
+Find `// define_atomic_histogram!(AtomicHistogram32, ...)` and the commented-out `impl AtomicHistogram32 { ... }`; uncomment both. Update the import:
+
+```rust
+use crate::{AtomicCount, Count, Error, Histogram, Histogram32};
+```
+
+- [ ] **Step 5: Build everything**
 
 Run: `cargo build`
-Expected: clean build. If borrow-checker complains about `count: self.buckets[i].as_u128() as u64`, the issue is usually parens/precedence — explicit `(self.buckets[i].as_u128()) as u64`.
-
-- [ ] **Step 4: Run all existing tests**
+Expected: clean. Now `Histogram32`, `AtomicHistogram32`, and `SparseHistogram32` all exist.
 
 Run: `cargo test --lib`
-Expected: all existing tests in `standard::tests` pass (they exercise the `<u64>` default path). All other module tests pass too.
+Expected: all existing tests pass.
 
-- [ ] **Step 5: Add u32-specific tests**
+- [ ] **Step 6: Add u32-targeted tests in `src/standard.rs` and `src/atomic.rs`**
 
-Append to `src/standard.rs` inside `mod tests`:
+In `src/standard.rs` `mod tests`, append:
 
 ```rust
 #[cfg(target_pointer_width = "64")]
 #[test]
-fn size_u32() {
-    assert_eq!(std::mem::size_of::<Histogram<u32>>(), 48);
-}
+fn size_u32() { assert_eq!(std::mem::size_of::<Histogram32>(), 48); }
 
 #[test]
 fn increment_u32() {
-    let mut h = Histogram::<u32>::new(7, 64).unwrap();
+    let mut h = Histogram32::new(7, 64).unwrap();
     h.increment(5).unwrap();
     h.increment(5).unwrap();
     h.increment(5).unwrap();
@@ -396,538 +1031,118 @@ fn increment_u32() {
 
 #[test]
 fn add_u32_wraps_at_max() {
-    let mut h = Histogram::<u32>::new(2, 4).unwrap();
+    let mut h = Histogram32::new(2, 4).unwrap();
     h.add(1, u32::MAX).unwrap();
-    // wrapping_add: u32::MAX + 1 = 0
     h.add(1, 1).unwrap();
     assert_eq!(h.as_slice()[1], 0u32);
 }
 
 #[test]
 fn checked_add_u32_overflow() {
-    let mut h1 = Histogram::<u32>::new(1, 3).unwrap();
-    let mut h2 = Histogram::<u32>::new(1, 3).unwrap();
+    let mut h1 = Histogram32::new(1, 3).unwrap();
+    let mut h2 = Histogram32::new(1, 3).unwrap();
     h1.as_mut_slice()[0] = u32::MAX;
     h2.as_mut_slice()[0] = 1;
     assert_eq!(h1.checked_add(&h2), Err(Error::Overflow));
 }
 
 #[test]
-fn wrapping_add_u32_wraps() {
-    let mut h1 = Histogram::<u32>::new(1, 3).unwrap();
-    let mut h2 = Histogram::<u32>::new(1, 3).unwrap();
-    h1.as_mut_slice()[0] = u32::MAX;
-    h2.as_mut_slice()[0] = 1;
-    let r = h1.wrapping_add(&h2).unwrap();
-    assert_eq!(r.as_slice()[0], 0u32);
-}
-
-#[test]
-fn checked_sub_u32_underflow() {
-    let mut h1 = Histogram::<u32>::new(1, 3).unwrap();
-    let mut h2 = Histogram::<u32>::new(1, 3).unwrap();
-    h1.as_mut_slice()[0] = 1;
-    h2.as_mut_slice()[0] = 2;
-    assert_eq!(h1.checked_sub(&h2), Err(Error::Underflow));
-}
-
-#[test]
-fn from_buckets_u32() {
-    let buckets: Vec<u32> = vec![0; Config::new(2, 4).unwrap().total_buckets()];
-    let h = Histogram::<u32>::from_buckets(2, 4, buckets).unwrap();
-    assert_eq!(h.as_slice().len(), 12);
-}
-
-#[test]
-fn quantiles_u32_match_u64() {
-    let mut h32 = Histogram::<u32>::new(7, 64).unwrap();
-    let mut h64 = Histogram::<u64>::new(7, 64).unwrap();
-    for v in 1..=100u64 {
-        h32.increment(v).unwrap();
-        h64.increment(v).unwrap();
-    }
-    let q32 = h32.quantiles(&[0.5, 0.9, 0.99]).unwrap().unwrap();
-    let q64 = h64.quantiles(&[0.5, 0.9, 0.99]).unwrap().unwrap();
-    for (k32, k64) in q32.entries().iter().zip(q64.entries().iter()) {
-        assert_eq!(k32.0, k64.0);
-        assert_eq!(k32.1.range(), k64.1.range());
-        assert_eq!(k32.1.count(), k64.1.count());
-    }
-}
-
-#[test]
 fn iter_u32_widens_count_to_u64() {
-    let mut h = Histogram::<u32>::new(2, 4).unwrap();
+    let mut h = Histogram32::new(2, 4).unwrap();
     h.add(1, 5u32).unwrap();
     let bucket = h.iter().find(|b| b.count() > 0).unwrap();
-    // Bucket.count() is u64 regardless of C
     let count: u64 = bucket.count();
     assert_eq!(count, 5);
 }
 ```
 
-- [ ] **Step 6: Run new tests**
-
-Run: `cargo test --lib standard::tests::`
-Expected: all existing tests pass plus 8 new u32 tests pass.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add src/standard.rs
-git commit -m "generalize Histogram to Histogram<C: Count = u64>
-
-Existing call sites continue to infer Histogram<u64> via the default.
-Bucket.count remains u64 regardless of C; counts are widened via
-Count::as_u128() at the API boundary."
-```
-
----
-
-## Task 3: Generalize `AtomicHistogram` to `AtomicHistogram<C: Count = u64>`
-
-**Files:**
-- Modify: `src/atomic.rs`
-
-- [ ] **Step 1: Read the current file**
-
-Run: read `src/atomic.rs` end-to-end.
-
-- [ ] **Step 2: Apply the generalization**
-
-Replace the file with the generalized version. Key changes:
-
-a) Imports: replace `use core::sync::atomic::{AtomicU64, Ordering};` with `use crate::{AtomicCount, Count};` (atomic primitives now come through the trait). The `Ordering` import is no longer needed because atomic operations go through `AtomicCount` methods.
-
-b) Struct:
-```rust
-pub struct AtomicHistogram<C: Count = u64> {
-    config: Config,
-    buckets: Box<[C::Atomic]>,
-}
-```
-
-c) Constructors:
-```rust
-impl<C: Count> AtomicHistogram<C> {
-    pub fn new(grouping_power: u8, max_value_power: u8) -> Result<Self, Error> {
-        let config = Config::new(grouping_power, max_value_power)?;
-        Ok(Self::with_config(&config))
-    }
-
-    pub fn with_config(config: &Config) -> Self {
-        let mut buckets = Vec::with_capacity(config.total_buckets());
-        buckets.resize_with(config.total_buckets(), || <C::Atomic as AtomicCount>::new(C::ZERO));
-        Self { config: *config, buckets: buckets.into() }
-    }
-
-    pub fn increment(&self, value: u64) -> Result<(), Error> {
-        self.add(value, C::ONE)
-    }
-
-    pub fn add(&self, value: u64, count: C) -> Result<(), Error> {
-        let index = self.config.value_to_index(value)?;
-        self.buckets[index].fetch_add_relaxed(count);
-        Ok(())
-    }
-
-    pub fn config(&self) -> Config { self.config }
-
-    pub fn load(&self) -> Histogram<C> {
-        let buckets: Vec<C> = self.buckets.iter().map(|b| b.load_relaxed()).collect();
-        Histogram { config: self.config, buckets: buckets.into() }
-    }
-}
-```
-
-Note: `Histogram { config, buckets }` requires the fields to be reachable. They are `pub(crate)` already in `standard.rs`. Good.
-
-d) `drain` — concrete-typed impl blocks per cfg. Since we cannot place `cfg(target_has_atomic = ...)` on a generic impl predicated on `C`, split into two concrete impls:
-
-```rust
-#[cfg(target_has_atomic = "64")]
-impl AtomicHistogram<u64> {
-    /// Drains the bucket values into a new `Histogram<u64>`.
-    ///
-    /// Resets all bucket values to zero. Uses `AtomicU64::swap`. Available
-    /// only on platforms that support 64-bit atomics.
-    pub fn drain(&self) -> Histogram<u64> {
-        let buckets: Vec<u64> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
-        Histogram { config: self.config, buckets: buckets.into() }
-    }
-}
-
-#[cfg(target_has_atomic = "32")]
-impl AtomicHistogram<u32> {
-    /// Drains the bucket values into a new `Histogram<u32>`.
-    ///
-    /// Resets all bucket values to zero. Uses `AtomicU32::swap`. Available
-    /// only on platforms that support 32-bit atomics (more widely supported
-    /// than 64-bit).
-    pub fn drain(&self) -> Histogram<u32> {
-        let buckets: Vec<u32> = self.buckets.iter().map(|b| b.swap_relaxed(0)).collect();
-        Histogram { config: self.config, buckets: buckets.into() }
-    }
-}
-```
-
-e) Debug impl:
-```rust
-impl<C: Count> std::fmt::Debug for AtomicHistogram<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AtomicHistogram")
-            .field("config", &self.config)
-            .finish()
-    }
-}
-```
-
-- [ ] **Step 3: Run all existing tests**
-
-Run: `cargo test --lib atomic::`
-Expected: all existing atomic tests pass (they exercise default `<u64>`).
-
-- [ ] **Step 4: Add u32-specific tests**
-
-Append to `src/atomic.rs` inside `mod tests`:
+In `src/atomic.rs` `mod tests`, append:
 
 ```rust
 #[cfg(target_pointer_width = "64")]
 #[test]
-fn size_u32() {
-    assert_eq!(std::mem::size_of::<AtomicHistogram<u32>>(), 48);
-}
-
-#[test]
-fn increment_u32_load() {
-    let h = AtomicHistogram::<u32>::new(7, 64).unwrap();
-    for v in 0..=100u64 {
-        h.increment(v).unwrap();
-    }
-    let snap = h.load();
-    let result = snap.quantile(0.5).unwrap().unwrap();
-    let q = Quantile::new(0.5).unwrap();
-    assert_eq!(result.get(&q).unwrap().end(), 50);
-}
+fn size_u32() { assert_eq!(std::mem::size_of::<AtomicHistogram32>(), 48); }
 
 #[cfg(target_has_atomic = "32")]
 #[test]
 fn drain_u32() {
-    let h = AtomicHistogram::<u32>::new(7, 64).unwrap();
-    for v in 0..=100u64 {
-        h.increment(v).unwrap();
-    }
+    let h = AtomicHistogram32::new(7, 64).unwrap();
+    for v in 0..=100u64 { h.increment(v).unwrap(); }
     let snap = h.drain();
     let result = snap.quantile(0.5).unwrap().unwrap();
     let q = Quantile::new(0.5).unwrap();
     assert_eq!(result.get(&q).unwrap().end(), 50);
-    // After drain, the recorder is empty
-    let snap2 = h.load();
-    assert_eq!(snap2.quantile(0.5).unwrap(), None);
-}
-
-#[test]
-fn add_u32_wraps_at_max() {
-    let h = AtomicHistogram::<u32>::new(2, 4).unwrap();
-    h.add(1, u32::MAX).unwrap();
-    h.add(1, 1).unwrap();
-    let snap = h.load();
-    assert_eq!(snap.as_slice()[1], 0u32);
 }
 ```
 
-- [ ] **Step 5: Run new tests**
+- [ ] **Step 7: cargo fmt + run all tests**
 
-Run: `cargo test --lib atomic::`
-Expected: all existing tests plus 4 new u32 tests pass.
+Run: `cargo fmt && cargo test`
+Expected: all unit + doc tests pass, clean fmt.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Single commit closes the cycle**
 
 ```bash
-git add src/atomic.rs
-git commit -m "generalize AtomicHistogram to AtomicHistogram<C: Count = u64>
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/sparse.rs src/standard.rs src/atomic.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "macroify SparseHistogram and finalize Histogram32 / AtomicHistogram32
 
-drain() is split into concrete-typed impl blocks for u32 and u64 because
-cfg cannot gate generic impls on type parameters. AtomicHistogram<u32>::drain
-is available on more targets than AtomicHistogram<u64>::drain."
+Wrap SparseHistogram in define_sparse_histogram! macro and invoke
+for SparseHistogram (u64) and SparseHistogram32 (u32). Uncomments
+the previously-deferred Histogram32 and AtomicHistogram32 macro
+invocations now that SparseHistogram32 exists.
+
+Includes u32-specific tests for Histogram32, AtomicHistogram32,
+and SparseHistogram32."
 ```
 
----
-
-## Task 4: Generalize `SparseHistogram` to `SparseHistogram<C: Count = u64>`
-
-**Files:**
-- Modify: `src/sparse.rs`
-
-- [ ] **Step 1: Read the current file**
-
-Run: read `src/sparse.rs` end-to-end.
-
-- [ ] **Step 2: Apply the generalization**
-
-Key changes:
-
-a) Imports: add `use crate::Count;`.
-
-b) Struct:
-```rust
-pub struct SparseHistogram<C: Count = u64> {
-    pub(crate) config: Config,
-    pub(crate) index: Vec<u32>,
-    pub(crate) count: Vec<C>,
-}
-```
-
-c) `impl SparseHistogram` → `impl<C: Count> SparseHistogram<C>` for the main impl block.
-
-d) `from_parts(config, index, count)`: signature takes `count: Vec<C>`. The check `if c == 0` becomes `if c == C::ZERO`.
-
-e) `into_parts(self)` returns `(Config, Vec<u32>, Vec<C>)`.
-
-f) `count(&self) -> &[C]`.
-
-g) `add_bucket(&mut self, idx: u32, n: C)`: parameter type `n: C`; check `if n != C::ZERO`.
-
-h) `checked_add(&self, h: &SparseHistogram<C>)`: returns `Result<SparseHistogram<C>, Error>`. Body uses `Count::checked_add` already (via trait method dispatch on `v1.checked_add(v2)`).
-
-i) `wrapping_add` / `wrapping_sub` / `checked_sub`: same signature changes, bodies unchanged.
-
-j) `downsample(&self, grouping_power: u8) -> Result<SparseHistogram<C>, Error>`. Body:
-   - `aggregating_count: u64` → `aggregating_count: C`
-   - `aggregating_count.wrapping_add(*n)` → `aggregating_count.wrapping_add(*n)` (already trait dispatch)
-   - Initial value `0u64` → `C::ZERO`.
-
-k) `iter()` returns `Iter<'_, C>`.
-
-l) `SampleQuantiles for SparseHistogram` → `impl<C: Count> SampleQuantiles for SparseHistogram<C>`. Body:
-   - `let total_count: u128 = self.count.iter().map(|v| *v as u128).sum();` → `... map(|v| v.as_u128()).sum();`
-   - Bucket construction: `count: self.count[idx]` → `count: self.count[idx].as_u128() as u64` (in min, max, and inside the loop).
-   - `partial_sum` calculation: same `as u128` → `.as_u128()` translation.
-
-m) `Iter`: `pub struct Iter<'a, C: Count = u64> { index: usize, histogram: &'a SparseHistogram<C> }`. The `next` impl widens count via `.as_u128() as u64`.
-
-n) `IntoIterator for &'a SparseHistogram` → `impl<'a, C: Count> IntoIterator for &'a SparseHistogram<C>` with `IntoIter = Iter<'a, C>`.
-
-o) `From<&Histogram> for SparseHistogram` → `impl<C: Count> From<&Histogram<C>> for SparseHistogram<C>`. The body's `if *n > 0` becomes `if *n != C::ZERO`.
-
-- [ ] **Step 3: Run all existing tests**
-
-Run: `cargo test --lib sparse::`
-Expected: all existing tests pass.
-
-- [ ] **Step 4: Add u32-specific tests**
-
-Append to `src/sparse.rs` inside `mod tests`:
-
-```rust
-#[test]
-fn from_parts_u32() {
-    let config = Config::new(7, 32).unwrap();
-    let h = SparseHistogram::<u32>::from_parts(config, vec![1, 3, 5], vec![6u32, 12, 7]).unwrap();
-    assert_eq!(h.index(), &[1, 3, 5]);
-    assert_eq!(h.count(), &[6u32, 12, 7]);
-}
-
-#[test]
-fn checked_add_u32_overflow() {
-    let config = Config::new(7, 32).unwrap();
-    let h1 = SparseHistogram::<u32>::from_parts(config, vec![1], vec![u32::MAX]).unwrap();
-    let h2 = SparseHistogram::<u32>::from_parts(config, vec![1], vec![1u32]).unwrap();
-    assert_eq!(h1.checked_add(&h2), Err(Error::Overflow));
-}
-
-#[test]
-fn wrapping_add_u32_wraps() {
-    let config = Config::new(7, 32).unwrap();
-    let h1 = SparseHistogram::<u32>::from_parts(config, vec![1], vec![u32::MAX]).unwrap();
-    let h2 = SparseHistogram::<u32>::from_parts(config, vec![1], vec![1u32]).unwrap();
-    let h = h1.wrapping_add(&h2).unwrap();
-    // Wraps to 0; add_bucket skips zero-count entries
-    assert!(h.index().is_empty());
-}
-
-#[test]
-fn from_histogram_u32() {
-    let mut h = Histogram::<u32>::new(7, 64).unwrap();
-    h.increment(1).unwrap();
-    h.increment(5).unwrap();
-    h.increment(100).unwrap();
-    let s = SparseHistogram::<u32>::from(&h);
-    assert_eq!(s.count().len(), 3);
-}
-
-#[test]
-fn quantiles_u32_match_u64() {
-    let mut h32 = Histogram::<u32>::new(4, 10).unwrap();
-    let mut h64 = Histogram::<u64>::new(4, 10).unwrap();
-    for v in 1..1024u64 {
-        h32.increment(v).unwrap();
-        h64.increment(v).unwrap();
-    }
-    let s32 = SparseHistogram::<u32>::from(&h32);
-    let s64 = SparseHistogram::<u64>::from(&h64);
-    let q32 = s32.quantile(0.5).unwrap().unwrap();
-    let q64 = s64.quantile(0.5).unwrap().unwrap();
-    let q = Quantile::new(0.5).unwrap();
-    assert_eq!(q32.get(&q).unwrap().range(), q64.get(&q).unwrap().range());
-}
-```
-
-- [ ] **Step 5: Run new tests**
-
-Run: `cargo test --lib sparse::`
-Expected: all existing tests plus 5 new u32 tests pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/sparse.rs
-git commit -m "generalize SparseHistogram to SparseHistogram<C: Count = u64>
-
-Bucket counts in QuantilesResult continue to be widened to u64 via
-Count::as_u128 at the API boundary."
-```
-
----
-
-## Task 5: Generalize `CumulativeROHistogram` to `CumulativeROHistogram<C: Count = u64>`
+## Task 5: Macroify `CumulativeROHistogram` and add `CumulativeROHistogram32`
 
 **Files:**
 - Modify: `src/cumulative.rs`
 
 - [ ] **Step 1: Read the current file**
 
-Run: read `src/cumulative.rs` end-to-end.
+- [ ] **Step 2: Wrap in `define_cumulative_histogram!` and invoke twice**
 
-- [ ] **Step 2: Apply the generalization**
+Pattern follows the same shape as Task 4. Key differences from sparse:
 
-Key changes:
+- Counts are cumulative (non-decreasing). `from_parts` validation: counts must be non-decreasing and non-zero.
+- `total_count() -> u64` widens via `c.as_u128() as u64`.
+- `bucket_quantile_range` and `iter_with_quantiles`: replace `as f64` with `.as_u128() as f64`.
+- `find_quantile_position`: cache-line threshold becomes `count_ty`-dependent — declare a const inside the macro body: `const CACHE_LINE_ENTRIES: usize = 64 / std::mem::size_of::<$count>();`.
+- `individual_count` private fn returns `u64`: uses `c.wrapping_sub(prev).as_u128() as u64`.
+- `From<&$hist>`: cumulative running sum starting from `<$count as Count>::ZERO`; `if n != ZERO` check; `running_sum.wrapping_add(*n)`.
+- `From<&$sparse>`: same cumulative pattern.
+- Iterator types: `CumulativeIter` / `CumulativeIter32`, `QuantileRangeIter` / `QuantileRangeIter32`.
 
-a) Imports: add `use crate::Count;`.
+Macro signature: `define_cumulative_histogram!($name:ident, $iter:ident, $qr_iter:ident, $hist:ident, $sparse:ident, $count:ty)`.
 
-b) Struct:
-```rust
-pub struct CumulativeROHistogram<C: Count = u64> {
-    config: Config,
-    index: Vec<u32>,
-    count: Vec<C>,
-}
-```
-
-c) `CACHE_LINE_U64S` constant — rename to `CACHE_LINE_ENTRIES` and compute via `64 / std::mem::size_of::<C>()`. Since this is now C-dependent, make it a const fn or compute at use:
+Two invocations:
 
 ```rust
-const fn cache_line_entries<C>() -> usize {
-    64 / std::mem::size_of::<C>()
-}
+define_cumulative_histogram!(
+    CumulativeROHistogram, CumulativeIter, QuantileRangeIter,
+    Histogram, SparseHistogram, u64
+);
+define_cumulative_histogram!(
+    CumulativeROHistogram32, CumulativeIter32, QuantileRangeIter32,
+    Histogram32, SparseHistogram32, u32
+);
 ```
 
-Use as `cache_line_entries::<C>()` in `find_quantile_position`.
+The full macro body mirrors the existing `src/cumulative.rs` impl block with `$count` substituted and the type-dependent const + `.as_u128()` calls applied. Since this is a mechanical translation, follow the existing source carefully — every numeric literal that was `0u64` becomes `<$count as Count>::ZERO`; every `as u128` becomes `.as_u128()`; every `as u64` widening for `total_count`/`individual_count`/`Bucket` becomes `(.as_u128()) as u64`.
 
-d) `impl CumulativeROHistogram` → `impl<C: Count> CumulativeROHistogram<C>` for the main block.
-
-e) `from_parts(config, index, count: Vec<C>)`: validation:
-   - `if c == 0` → `if c == C::ZERO`.
-   - `if c < p` (non-decreasing check): keep, `<` works for `Ord`.
-
-f) `into_parts(self) -> (Config, Vec<u32>, Vec<C>)`.
-
-g) `count(&self) -> &[C]`.
-
-h) `total_count(&self) -> u64`: widen via `.as_u128() as u64`:
-
-```rust
-pub fn total_count(&self) -> u64 {
-    self.count.last().map(|c| c.as_u128() as u64).unwrap_or(0)
-}
-```
-
-i) `bucket_quantile_range`: replace `as f64` with `.as_u128() as f64`:
-
-```rust
-let total = self.count.last().copied()?.as_u128() as f64;
-// ...
-let lower = if bucket_idx == 0 {
-    0.0
-} else {
-    self.count[bucket_idx - 1].as_u128() as f64 / total
-};
-let upper = self.count[bucket_idx].as_u128() as f64 / total;
-```
-
-j) `iter_with_quantiles`: same f64 conversion via `.as_u128() as f64`.
-
-k) `iter()` returns `Iter<'_, C>`.
-
-l) `individual_count` private fn — keep returning `u64` but compute through `C` first:
-
-```rust
-fn individual_count(&self, position: usize) -> u64 {
-    if position == 0 {
-        self.count[0].as_u128() as u64
-    } else {
-        // self.count[position] >= self.count[position - 1] by invariant,
-        // so wrapping_sub yields the correct difference.
-        self.count[position].wrapping_sub(self.count[position - 1]).as_u128() as u64
-    }
-}
-```
-
-m) `find_quantile_position`: use `cache_line_entries::<C>()` and `c.as_u128() as u128 >= target`:
-
-```rust
-fn find_quantile_position(&self, target: u128) -> usize {
-    if self.count.len() <= cache_line_entries::<C>() {
-        for (i, c) in self.count.iter().enumerate() {
-            if c.as_u128() >= target {
-                return i;
-            }
-        }
-        self.count.len() - 1
-    } else {
-        let pos = self.count.partition_point(|c| c.as_u128() < target);
-        pos.min(self.count.len() - 1)
-    }
-}
-```
-
-n) `SampleQuantiles for CumulativeROHistogram` → `impl<C: Count> SampleQuantiles for CumulativeROHistogram<C>`. Body:
-   - `*self.count.last().unwrap() as u128` → `self.count.last().unwrap().as_u128()`.
-   - `self.count[0]` in min Bucket → `self.count[0].as_u128() as u64`.
-   - Use `self.individual_count(last)` for max bucket count (already u64).
-   - Use `self.individual_count(pos)` for quantile-result bucket counts (already u64).
-
-o) `Iter` and `QuantileRangeIter`: parameterize over `<'a, C: Count>`. The `next` impls use `self.histogram.individual_count(i)` (already u64) for `Bucket.count`.
-
-p) `IntoIterator for &'a CumulativeROHistogram` → `impl<'a, C: Count> IntoIterator for &'a CumulativeROHistogram<C>`.
-
-q) `From<&Histogram> for CumulativeROHistogram` → `impl<C: Count> From<&Histogram<C>> for CumulativeROHistogram<C>`. Body:
-   - `running_sum: u64` → `running_sum: C`.
-   - `running_sum = running_sum.wrapping_add(n)` → already trait dispatch, works.
-   - `if n > 0` → `if n != C::ZERO`.
-   - `count.push(running_sum)` works for any `C: Copy`.
-   - Initial `running_sum = 0u64` → `running_sum = C::ZERO`.
-
-r) `From<&SparseHistogram> for CumulativeROHistogram` → `impl<C: Count> From<&SparseHistogram<C>> for CumulativeROHistogram<C>`. Same `running_sum: C` change.
-
-- [ ] **Step 3: Run all existing tests**
-
-Run: `cargo test --lib cumulative::`
-Expected: all existing tests pass.
-
-- [ ] **Step 4: Add u32-specific tests**
-
-Append to `src/cumulative.rs` inside `mod tests`:
+- [ ] **Step 3: Add u32-specific tests**
 
 ```rust
 #[test]
 fn from_histogram_u32() {
-    let mut h = Histogram::<u32>::new(7, 64).unwrap();
+    let mut h = Histogram32::new(7, 64).unwrap();
     h.increment(1).unwrap();
     h.increment(1).unwrap();
     h.increment(5).unwrap();
     h.increment(100).unwrap();
-    let croh = CumulativeROHistogram::<u32>::from(&h);
+    let croh = CumulativeROHistogram32::from(&h);
     assert_eq!(croh.index().len(), 3);
     assert_eq!(croh.count(), &[2u32, 3, 4]);
     assert_eq!(croh.total_count(), 4);
@@ -936,22 +1151,22 @@ fn from_histogram_u32() {
 #[test]
 fn from_parts_u32() {
     let config = Config::new(7, 32).unwrap();
-    let croh =
-        CumulativeROHistogram::<u32>::from_parts(config, vec![1, 3, 5], vec![6u32, 18, 25])
-            .unwrap();
+    let croh = CumulativeROHistogram32::from_parts(
+        config, vec![1, 3, 5], vec![6u32, 18, 25],
+    ).unwrap();
     assert_eq!(croh.total_count(), 25);
 }
 
 #[test]
 fn quantiles_u32_match_u64() {
-    let mut h32 = Histogram::<u32>::new(4, 10).unwrap();
-    let mut h64 = Histogram::<u64>::new(4, 10).unwrap();
+    let mut h32 = Histogram32::new(4, 10).unwrap();
+    let mut h64 = Histogram::new(4, 10).unwrap();
     for v in 1..1024u64 {
         h32.increment(v).unwrap();
         h64.increment(v).unwrap();
     }
-    let c32 = CumulativeROHistogram::<u32>::from(&h32);
-    let c64 = CumulativeROHistogram::<u64>::from(&h64);
+    let c32 = CumulativeROHistogram32::from(&h32);
+    let c64 = CumulativeROHistogram::from(&h64);
     let qs = &[0.0, 0.5, 0.99, 1.0];
     let r32 = c32.quantiles(qs).unwrap().unwrap();
     let r64 = c64.quantiles(qs).unwrap().unwrap();
@@ -959,148 +1174,109 @@ fn quantiles_u32_match_u64() {
         assert_eq!(q32, q64);
     }
 }
-
-#[test]
-fn individual_count_u32() {
-    let config = Config::new(7, 32).unwrap();
-    let croh =
-        CumulativeROHistogram::<u32>::from_parts(config, vec![1, 3, 5], vec![10u32, 40, 100])
-            .unwrap();
-    let buckets: Vec<_> = croh.iter().collect();
-    assert_eq!(buckets[0].count(), 10);
-    assert_eq!(buckets[1].count(), 30);
-    assert_eq!(buckets[2].count(), 60);
-}
 ```
 
-- [ ] **Step 5: Run new tests**
+- [ ] **Step 4: cargo fmt + run all tests**
 
-Run: `cargo test --lib cumulative::`
-Expected: all existing tests plus 4 new u32 tests pass.
+Run: `cargo fmt && cargo test`
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/cumulative.rs
-git commit -m "generalize CumulativeROHistogram to CumulativeROHistogram<C: Count = u64>
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/cumulative.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "macroify CumulativeROHistogram and add CumulativeROHistogram32
 
-individual_count and total_count continue to return u64 (widened via
-Count::as_u128) so the public API does not gain a generic Bucket type."
+Wrap in define_cumulative_histogram! macro. Cache-line threshold for
+linear-vs-binary search is now count-type-dependent (64 / size_of::<C>).
+total_count and individual_count continue to return u64."
 ```
-
----
 
 ## Task 6: Cross-width same-variant `From` (widening) impls
 
 **Files:**
 - Create: `src/conversions.rs`
-- Modify: `src/lib.rs` (add `mod conversions;`)
-
-All cross-width and combined cross-variant + narrowing conversions live in one module so the conversion matrix is reviewable in one place.
+- Modify: `src/lib.rs` (add `mod conversions;`, export new types)
 
 - [ ] **Step 1: Create `src/conversions.rs` with widening impls**
 
-Write to `src/conversions.rs`:
-
 ```rust
 //! Cross-width and combined cross-variant + narrowing conversions
-//! between histogram variants.
-//!
-//! - Widening (`u32` → `u64`) is infallible and exposed via `From`.
-//! - Narrowing (`u64` → `u32`) is fallible (`Err(Error::Overflow)`) and
-//!   exposed via `TryFrom`. Direct cross-variant + narrowing paths
-//!   (e.g. `Histogram<u64>` → `CumulativeROHistogram<u32>`) are also
-//!   provided for the snapshot pipeline.
+//! between histogram type families.
 
 use crate::{
-    AtomicCount, AtomicHistogram, Count, CumulativeROHistogram, Error,
-    Histogram, SparseHistogram,
+    AtomicCount, AtomicHistogram, AtomicHistogram32, CumulativeROHistogram,
+    CumulativeROHistogram32, Error, Histogram, Histogram32, SparseHistogram,
+    SparseHistogram32,
 };
 
 // ---------------- Widening (u32 -> u64) ----------------
 
-impl From<&Histogram<u32>> for Histogram<u64> {
-    fn from(h: &Histogram<u32>) -> Self {
+impl From<&Histogram32> for Histogram {
+    fn from(h: &Histogram32) -> Self {
         let buckets: Vec<u64> = h.as_slice().iter().map(|&c| c as u64).collect();
         Histogram::from_buckets(
             h.config().grouping_power(),
             h.config().max_value_power(),
             buckets,
-        )
-        .expect("widening preserves bucket count")
+        ).expect("widening preserves bucket count")
     }
 }
 
-impl From<&AtomicHistogram<u32>> for AtomicHistogram<u64> {
-    fn from(h: &AtomicHistogram<u32>) -> Self {
-        // Snapshot the source via load(), widen, then materialize as atomic.
-        let snapshot = h.load(); // Histogram<u32>
-        let widened: Histogram<u64> = (&snapshot).into();
-        let out = AtomicHistogram::<u64>::with_config(&widened.config());
+impl From<&AtomicHistogram32> for AtomicHistogram {
+    fn from(h: &AtomicHistogram32) -> Self {
+        let snapshot = h.load();
+        let widened: Histogram = (&snapshot).into();
+        let out = AtomicHistogram::with_config(&widened.config());
         for (i, &c) in widened.as_slice().iter().enumerate() {
-            // Direct slot writes via the atomic primitive.
-            out.add_at_index(i, c);
+            out.buckets[i].fetch_add_relaxed(c);
         }
         out
     }
 }
 
-impl From<&SparseHistogram<u32>> for SparseHistogram<u64> {
-    fn from(h: &SparseHistogram<u32>) -> Self {
+impl From<&SparseHistogram32> for SparseHistogram {
+    fn from(h: &SparseHistogram32) -> Self {
         let widened: Vec<u64> = h.count().iter().map(|&c| c as u64).collect();
-        SparseHistogram::<u64>::from_parts(h.config(), h.index().to_vec(), widened)
+        SparseHistogram::from_parts(h.config(), h.index().to_vec(), widened)
             .expect("widening preserves invariants")
     }
 }
 
-impl From<&CumulativeROHistogram<u32>> for CumulativeROHistogram<u64> {
-    fn from(h: &CumulativeROHistogram<u32>) -> Self {
+impl From<&CumulativeROHistogram32> for CumulativeROHistogram {
+    fn from(h: &CumulativeROHistogram32) -> Self {
         let widened: Vec<u64> = h.count().iter().map(|&c| c as u64).collect();
-        CumulativeROHistogram::<u64>::from_parts(h.config(), h.index().to_vec(), widened)
+        CumulativeROHistogram::from_parts(h.config(), h.index().to_vec(), widened)
             .expect("widening preserves invariants")
     }
-}
-```
-
-Note the `AtomicHistogram` widening above uses a helper `add_at_index` we don't yet have. Add a `pub(crate)` helper to `AtomicHistogram` for this purpose:
-
-In `src/atomic.rs`, add inside `impl<C: Count> AtomicHistogram<C>`:
-
-```rust
-pub(crate) fn add_at_index(&self, index: usize, count: C) {
-    self.buckets[index].fetch_add_relaxed(count);
 }
 ```
 
 - [ ] **Step 2: Wire the module into `src/lib.rs`**
 
-Add `mod conversions;` to the module list in `src/lib.rs` (no re-exports needed — the impls are picked up by trait coherence).
+Add `mod conversions;` to the module list. Update re-exports to include new types:
 
-- [ ] **Step 3: Build and run existing tests**
+```rust
+pub use atomic::{AtomicHistogram, AtomicHistogram32};
+pub use cumulative::{CumulativeROHistogram, CumulativeROHistogram32};
+pub use sparse::{SparseHistogram, SparseHistogram32};
+pub use standard::{Histogram, Histogram32};
+```
 
-Run: `cargo build`
-Expected: clean.
-
-Run: `cargo test --lib`
-Expected: all prior tests still pass.
-
-- [ ] **Step 4: Add widening tests**
-
-Append to `src/conversions.rs`:
+- [ ] **Step 3: Add widening tests in `src/conversions.rs`**
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
 
     #[test]
     fn widen_histogram() {
-        let mut h32 = Histogram::<u32>::new(7, 32).unwrap();
+        let mut h32 = Histogram32::new(7, 32).unwrap();
         h32.add(1, 1234u32).unwrap();
         h32.add(1000, 5678u32).unwrap();
-        let h64: Histogram<u64> = (&h32).into();
+        let h64: Histogram = (&h32).into();
         assert_eq!(h64.config(), h32.config());
-        // Compare slice values widened
         for (a, b) in h64.as_slice().iter().zip(h32.as_slice().iter()) {
             assert_eq!(*a, *b as u64);
         }
@@ -1108,19 +1284,20 @@ mod tests {
 
     #[test]
     fn widen_sparse() {
-        let config = crate::Config::new(7, 32).unwrap();
-        let s32 = SparseHistogram::<u32>::from_parts(config, vec![1, 3], vec![10u32, 20]).unwrap();
-        let s64: SparseHistogram<u64> = (&s32).into();
+        let config = Config::new(7, 32).unwrap();
+        let s32 = SparseHistogram32::from_parts(config, vec![1, 3], vec![10u32, 20]).unwrap();
+        let s64: SparseHistogram = (&s32).into();
         assert_eq!(s64.count(), &[10u64, 20]);
         assert_eq!(s64.index(), &[1u32, 3]);
     }
 
     #[test]
     fn widen_cumulative() {
-        let config = crate::Config::new(7, 32).unwrap();
-        let c32 =
-            CumulativeROHistogram::<u32>::from_parts(config, vec![1, 3], vec![10u32, 30]).unwrap();
-        let c64: CumulativeROHistogram<u64> = (&c32).into();
+        let config = Config::new(7, 32).unwrap();
+        let c32 = CumulativeROHistogram32::from_parts(
+            config, vec![1, 3], vec![10u32, 30],
+        ).unwrap();
+        let c64: CumulativeROHistogram = (&c32).into();
         assert_eq!(c64.count(), &[10u64, 30]);
     }
 
@@ -1128,10 +1305,10 @@ mod tests {
     #[cfg(target_has_atomic = "64")]
     #[test]
     fn widen_atomic_histogram() {
-        let h32 = AtomicHistogram::<u32>::new(7, 32).unwrap();
+        let h32 = AtomicHistogram32::new(7, 32).unwrap();
         h32.add(5, 100u32).unwrap();
         h32.add(50, 200u32).unwrap();
-        let h64: AtomicHistogram<u64> = (&h32).into();
+        let h64: AtomicHistogram = (&h32).into();
         let snap = h64.load();
         let total: u64 = snap.as_slice().iter().sum();
         assert_eq!(total, 300);
@@ -1139,44 +1316,35 @@ mod tests {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 4: Run + commit**
 
-Run: `cargo test --lib conversions::`
-Expected: 4 widening tests pass.
-
-- [ ] **Step 6: Commit**
+Run: `cargo fmt && cargo test`
 
 ```bash
-git add src/conversions.rs src/lib.rs src/atomic.rs
-git commit -m "add cross-width widening From impls
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/conversions.rs src/lib.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "add cross-width widening From impls
 
-u32 -> u64 widening for Histogram, AtomicHistogram, SparseHistogram,
-CumulativeROHistogram. Widening is infallible."
+u32 -> u64 widening for all four histogram families. Infallible."
 ```
-
----
 
 ## Task 7: Cross-width same-variant `TryFrom` (narrowing) impls
 
 **Files:**
 - Modify: `src/conversions.rs`
 
-- [ ] **Step 1: Add narrowing impls**
-
-Append to `src/conversions.rs` (above the test module):
+- [ ] **Step 1: Add narrowing impls (above the test module)**
 
 ```rust
 // ---------------- Narrowing (u64 -> u32) ----------------
 
-impl TryFrom<&Histogram<u64>> for Histogram<u32> {
+impl TryFrom<&Histogram> for Histogram32 {
     type Error = Error;
-
-    fn try_from(h: &Histogram<u64>) -> Result<Self, Error> {
+    fn try_from(h: &Histogram) -> Result<Self, Error> {
         let mut narrowed: Vec<u32> = Vec::with_capacity(h.as_slice().len());
         for &c in h.as_slice() {
             narrowed.push(u32::try_from(c).map_err(|_| Error::Overflow)?);
         }
-        Histogram::<u32>::from_buckets(
+        Histogram32::from_buckets(
             h.config().grouping_power(),
             h.config().max_value_power(),
             narrowed,
@@ -1184,161 +1352,132 @@ impl TryFrom<&Histogram<u64>> for Histogram<u32> {
     }
 }
 
-impl TryFrom<&SparseHistogram<u64>> for SparseHistogram<u32> {
+impl TryFrom<&SparseHistogram> for SparseHistogram32 {
     type Error = Error;
-
-    fn try_from(h: &SparseHistogram<u64>) -> Result<Self, Error> {
+    fn try_from(h: &SparseHistogram) -> Result<Self, Error> {
         let mut narrowed: Vec<u32> = Vec::with_capacity(h.count().len());
         for &c in h.count() {
             narrowed.push(u32::try_from(c).map_err(|_| Error::Overflow)?);
         }
-        SparseHistogram::<u32>::from_parts(h.config(), h.index().to_vec(), narrowed)
+        SparseHistogram32::from_parts(h.config(), h.index().to_vec(), narrowed)
     }
 }
 
-impl TryFrom<&CumulativeROHistogram<u64>> for CumulativeROHistogram<u32> {
+impl TryFrom<&CumulativeROHistogram> for CumulativeROHistogram32 {
     type Error = Error;
-
-    fn try_from(h: &CumulativeROHistogram<u64>) -> Result<Self, Error> {
-        // Cumulative-only optimization: the last (max) cumulative value bounds
-        // every prefix sum. If it fits in u32, every entry fits in u32.
+    fn try_from(h: &CumulativeROHistogram) -> Result<Self, Error> {
         if let Some(&last) = h.count().last() {
             if u32::try_from(last).is_err() {
                 return Err(Error::Overflow);
             }
         }
         let narrowed: Vec<u32> = h.count().iter().map(|&c| c as u32).collect();
-        CumulativeROHistogram::<u32>::from_parts(h.config(), h.index().to_vec(), narrowed)
+        CumulativeROHistogram32::from_parts(h.config(), h.index().to_vec(), narrowed)
     }
 }
 ```
 
-- [ ] **Step 2: Add narrowing tests**
-
-Append to the `mod tests` block in `src/conversions.rs`:
+- [ ] **Step 2: Add narrowing tests in `mod tests`**
 
 ```rust
 #[test]
 fn narrow_histogram_success() {
-    let mut h64 = Histogram::<u64>::new(7, 32).unwrap();
+    let mut h64 = Histogram::new(7, 32).unwrap();
     h64.add(1, 100u64).unwrap();
     h64.add(1000, 200u64).unwrap();
-    let h32: Histogram<u32> = (&h64).try_into().unwrap();
+    let h32: Histogram32 = (&h64).try_into().unwrap();
     assert_eq!(h32.as_slice()[1], 100u32);
 }
 
 #[test]
 fn narrow_histogram_overflow() {
-    let mut h64 = Histogram::<u64>::new(2, 4).unwrap();
+    let mut h64 = Histogram::new(2, 4).unwrap();
     h64.add(1, (u32::MAX as u64) + 1).unwrap();
-    let r: Result<Histogram<u32>, _> = (&h64).try_into();
+    let r: Result<Histogram32, _> = (&h64).try_into();
     assert_eq!(r, Err(Error::Overflow));
 }
 
 #[test]
 fn narrow_sparse_overflow() {
-    let config = crate::Config::new(7, 32).unwrap();
-    let s64 =
-        SparseHistogram::<u64>::from_parts(config, vec![1], vec![(u32::MAX as u64) + 1]).unwrap();
-    let r: Result<SparseHistogram<u32>, _> = (&s64).try_into();
+    let config = Config::new(7, 32).unwrap();
+    let s64 = SparseHistogram::from_parts(
+        config, vec![1], vec![(u32::MAX as u64) + 1],
+    ).unwrap();
+    let r: Result<SparseHistogram32, _> = (&s64).try_into();
     assert_eq!(r, Err(Error::Overflow));
 }
 
 #[test]
 fn narrow_cumulative_checks_total_only() {
-    let config = crate::Config::new(7, 32).unwrap();
-    // Total exceeds u32::MAX -> fail.
-    let c64 = CumulativeROHistogram::<u64>::from_parts(
-        config,
-        vec![1, 3],
-        vec![100u64, (u32::MAX as u64) + 1],
-    )
-    .unwrap();
-    let r: Result<CumulativeROHistogram<u32>, _> = (&c64).try_into();
+    let config = Config::new(7, 32).unwrap();
+    let c64 = CumulativeROHistogram::from_parts(
+        config, vec![1, 3], vec![100u64, (u32::MAX as u64) + 1],
+    ).unwrap();
+    let r: Result<CumulativeROHistogram32, _> = (&c64).try_into();
     assert_eq!(r, Err(Error::Overflow));
 
-    // Total fits -> succeed (every prefix is necessarily smaller).
-    let c64_ok =
-        CumulativeROHistogram::<u64>::from_parts(config, vec![1, 3], vec![100u64, 200]).unwrap();
-    let c32: CumulativeROHistogram<u32> = (&c64_ok).try_into().unwrap();
+    let c64_ok = CumulativeROHistogram::from_parts(
+        config, vec![1, 3], vec![100u64, 200],
+    ).unwrap();
+    let c32: CumulativeROHistogram32 = (&c64_ok).try_into().unwrap();
     assert_eq!(c32.total_count(), 200);
 }
 
 #[test]
 fn round_trip_widen_then_narrow() {
-    let mut h32 = Histogram::<u32>::new(7, 32).unwrap();
+    let mut h32 = Histogram32::new(7, 32).unwrap();
     h32.add(5, 1234u32).unwrap();
     h32.add(50, 5678u32).unwrap();
-    let h64: Histogram<u64> = (&h32).into();
-    let h32_back: Histogram<u32> = (&h64).try_into().unwrap();
+    let h64: Histogram = (&h32).into();
+    let h32_back: Histogram32 = (&h64).try_into().unwrap();
     assert_eq!(h32.as_slice(), h32_back.as_slice());
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [ ] **Step 3: Run + commit**
 
-Run: `cargo test --lib conversions::`
-Expected: all widening + 5 new narrowing tests pass.
-
-- [ ] **Step 4: Commit**
+Run: `cargo fmt && cargo test`
 
 ```bash
-git add src/conversions.rs
-git commit -m "add cross-width narrowing TryFrom impls
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/conversions.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "add cross-width narrowing TryFrom impls
 
 u64 -> u32 narrowing for Histogram, SparseHistogram, CumulativeROHistogram.
-Cumulative narrowing checks only the total count (last cumulative value)
-since it bounds every prefix sum."
+Cumulative narrowing checks only the total count (last cumulative
+value) since it bounds every prefix sum."
 ```
-
----
 
 ## Task 8: Cross-variant + narrowing combined `TryFrom` impls
 
 **Files:**
 - Modify: `src/conversions.rs`
 
-These provide the direct snapshot-pipeline paths called out in the spec.
-
-- [ ] **Step 1: Add combined narrowing impls**
-
-Append to `src/conversions.rs` (above the test module):
+- [ ] **Step 1: Add direct paths**
 
 ```rust
 // -------- Cross-variant + narrowing (u64 -> u32) --------
 
-/// Direct path for the snapshot pipeline:
-/// `Histogram<u64>` (delta) → `CumulativeROHistogram<u32>`.
-///
-/// Single pass: accumulate non-zero buckets, fail with `Error::Overflow`
-/// if the running total ever exceeds `u32::MAX`.
-impl TryFrom<&Histogram<u64>> for CumulativeROHistogram<u32> {
+impl TryFrom<&Histogram> for CumulativeROHistogram32 {
     type Error = Error;
-
-    fn try_from(h: &Histogram<u64>) -> Result<Self, Error> {
+    fn try_from(h: &Histogram) -> Result<Self, Error> {
         let mut index: Vec<u32> = Vec::new();
         let mut count: Vec<u32> = Vec::new();
         let mut running: u64 = 0;
         for (i, &n) in h.as_slice().iter().enumerate() {
             if n > 0 {
-                running = running
-                    .checked_add(n)
-                    .ok_or(Error::Overflow)?;
-                if running > u32::MAX as u64 {
-                    return Err(Error::Overflow);
-                }
+                running = running.checked_add(n).ok_or(Error::Overflow)?;
+                if running > u32::MAX as u64 { return Err(Error::Overflow); }
                 index.push(i as u32);
                 count.push(running as u32);
             }
         }
-        CumulativeROHistogram::<u32>::from_parts(h.config(), index, count)
+        CumulativeROHistogram32::from_parts(h.config(), index, count)
     }
 }
 
-impl TryFrom<&Histogram<u64>> for SparseHistogram<u32> {
+impl TryFrom<&Histogram> for SparseHistogram32 {
     type Error = Error;
-
-    fn try_from(h: &Histogram<u64>) -> Result<Self, Error> {
+    fn try_from(h: &Histogram) -> Result<Self, Error> {
         let mut index: Vec<u32> = Vec::new();
         let mut count: Vec<u32> = Vec::new();
         for (i, &n) in h.as_slice().iter().enumerate() {
@@ -1347,148 +1486,106 @@ impl TryFrom<&Histogram<u64>> for SparseHistogram<u32> {
                 index.push(i as u32);
             }
         }
-        SparseHistogram::<u32>::from_parts(h.config(), index, count)
+        SparseHistogram32::from_parts(h.config(), index, count)
     }
 }
 
-impl TryFrom<&SparseHistogram<u64>> for CumulativeROHistogram<u32> {
+impl TryFrom<&SparseHistogram> for CumulativeROHistogram32 {
     type Error = Error;
-
-    fn try_from(h: &SparseHistogram<u64>) -> Result<Self, Error> {
+    fn try_from(h: &SparseHistogram) -> Result<Self, Error> {
         let mut running: u64 = 0;
         let mut count: Vec<u32> = Vec::with_capacity(h.count().len());
         for &n in h.count() {
             running = running.checked_add(n).ok_or(Error::Overflow)?;
-            if running > u32::MAX as u64 {
-                return Err(Error::Overflow);
-            }
+            if running > u32::MAX as u64 { return Err(Error::Overflow); }
             count.push(running as u32);
         }
-        CumulativeROHistogram::<u32>::from_parts(h.config(), h.index().to_vec(), count)
+        CumulativeROHistogram32::from_parts(h.config(), h.index().to_vec(), count)
     }
 }
 ```
 
 - [ ] **Step 2: Add tests**
 
-Append to the `mod tests` block in `src/conversions.rs`:
-
 ```rust
 #[test]
-fn histogram_u64_to_cumulative_u32() {
-    let mut h = Histogram::<u64>::new(7, 32).unwrap();
+fn histogram_to_cumulative32() {
+    let mut h = Histogram::new(7, 32).unwrap();
     h.add(1, 100u64).unwrap();
     h.add(50, 200u64).unwrap();
     h.add(1000, 300u64).unwrap();
-    let croh: CumulativeROHistogram<u32> = (&h).try_into().unwrap();
+    let croh: CumulativeROHistogram32 = (&h).try_into().unwrap();
     assert_eq!(croh.total_count(), 600);
     assert_eq!(croh.count().len(), 3);
 }
 
 #[test]
-fn histogram_u64_to_cumulative_u32_overflow() {
-    let mut h = Histogram::<u64>::new(2, 4).unwrap();
+fn histogram_to_cumulative32_overflow() {
+    let mut h = Histogram::new(2, 4).unwrap();
     h.add(0, 3_000_000_000u64).unwrap();
-    h.add(1, 2_000_000_000u64).unwrap(); // running > u32::MAX
-    let r: Result<CumulativeROHistogram<u32>, _> = (&h).try_into();
+    h.add(1, 2_000_000_000u64).unwrap();
+    let r: Result<CumulativeROHistogram32, _> = (&h).try_into();
     assert_eq!(r, Err(Error::Overflow));
 }
 
 #[test]
-fn histogram_u64_to_sparse_u32() {
-    let mut h = Histogram::<u64>::new(7, 32).unwrap();
+fn histogram_to_sparse32() {
+    let mut h = Histogram::new(7, 32).unwrap();
     h.add(1, 100u64).unwrap();
     h.add(1000, 200u64).unwrap();
-    let s: SparseHistogram<u32> = (&h).try_into().unwrap();
+    let s: SparseHistogram32 = (&h).try_into().unwrap();
     assert_eq!(s.count().iter().map(|&c| c as u64).sum::<u64>(), 300);
 }
 
 #[test]
-fn histogram_u64_to_sparse_u32_overflow() {
-    let mut h = Histogram::<u64>::new(2, 4).unwrap();
-    h.add(1, (u32::MAX as u64) + 1).unwrap();
-    let r: Result<SparseHistogram<u32>, _> = (&h).try_into();
-    assert_eq!(r, Err(Error::Overflow));
-}
-
-#[test]
-fn sparse_u64_to_cumulative_u32() {
-    let config = crate::Config::new(7, 32).unwrap();
-    let s = SparseHistogram::<u64>::from_parts(config, vec![1, 3], vec![100u64, 200]).unwrap();
-    let c: CumulativeROHistogram<u32> = (&s).try_into().unwrap();
+fn sparse_to_cumulative32() {
+    let config = Config::new(7, 32).unwrap();
+    let s = SparseHistogram::from_parts(config, vec![1, 3], vec![100u64, 200]).unwrap();
+    let c: CumulativeROHistogram32 = (&s).try_into().unwrap();
     assert_eq!(c.count(), &[100u32, 300]);
 }
 
 #[test]
 fn direct_path_matches_two_step() {
-    // Build a moderately complex Histogram<u64>.
-    let mut h = Histogram::<u64>::new(4, 10).unwrap();
-    for v in 1..1024u64 {
-        h.increment(v).unwrap();
-    }
-
-    // Direct: Histogram<u64> -> CumulativeROHistogram<u32>
-    let direct: CumulativeROHistogram<u32> = (&h).try_into().unwrap();
-
-    // Two-step: Histogram<u64> -> CumulativeROHistogram<u64> -> CumulativeROHistogram<u32>
-    let mid: CumulativeROHistogram<u64> = (&h).into();
-    let two_step: CumulativeROHistogram<u32> = (&mid).try_into().unwrap();
-
+    let mut h = Histogram::new(4, 10).unwrap();
+    for v in 1..1024u64 { h.increment(v).unwrap(); }
+    let direct: CumulativeROHistogram32 = (&h).try_into().unwrap();
+    let mid: CumulativeROHistogram = (&h).into();
+    let two_step: CumulativeROHistogram32 = (&mid).try_into().unwrap();
     assert_eq!(direct.count(), two_step.count());
     assert_eq!(direct.index(), two_step.index());
 }
 
 #[test]
 fn snapshot_pipeline_end_to_end() {
-    use crate::AtomicHistogram;
-    let recorder = AtomicHistogram::<u64>::new(7, 64).unwrap();
-
-    // Window 1
-    for v in 1..=50u64 {
-        recorder.increment(v).unwrap();
-    }
+    let recorder = AtomicHistogram::new(7, 64).unwrap();
+    for v in 1..=50u64 { recorder.increment(v).unwrap(); }
     let snap_t0 = recorder.load();
-
-    // Window 2
-    for v in 1..=50u64 {
-        recorder.increment(v).unwrap();
-    }
+    for v in 1..=50u64 { recorder.increment(v).unwrap(); }
     let snap_t1 = recorder.load();
-
     let delta = snap_t1.checked_sub(&snap_t0).unwrap();
-    let analytic: CumulativeROHistogram<u32> = (&delta).try_into().unwrap();
-
+    let analytic: CumulativeROHistogram32 = (&delta).try_into().unwrap();
     assert_eq!(analytic.total_count(), 50);
 }
 ```
 
-- [ ] **Step 3: Run tests**
-
-Run: `cargo test --lib conversions::`
-Expected: all prior conversion tests + 7 new combined-conversion tests pass.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Run + commit**
 
 ```bash
-git add src/conversions.rs
-git commit -m "add cross-variant + narrowing TryFrom impls for snapshot pipeline
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add src/conversions.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "add cross-variant + narrowing TryFrom impls for snapshot pipeline
 
-Direct paths Histogram<u64> -> CumulativeROHistogram<u32>,
-Histogram<u64> -> SparseHistogram<u32>, and SparseHistogram<u64> ->
-CumulativeROHistogram<u32>. Each runs in a single pass; the cumulative
-target checks only the running total against u32::MAX."
+Direct paths Histogram -> CumulativeROHistogram32, Histogram ->
+SparseHistogram32, SparseHistogram -> CumulativeROHistogram32. Each
+is a single pass."
 ```
 
----
-
-## Task 9: Update benchmarks for u32
+## Task 9: Update benchmarks
 
 **Files:**
 - Modify: `benches/histogram.rs`
 
-- [ ] **Step 1: Add u32 bench groups**
-
-Replace the contents of `benches/histogram.rs`:
+- [ ] **Step 1: Replace contents**
 
 ```rust
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -1501,303 +1598,134 @@ macro_rules! benchmark {
         group.bench_function("increment/max", |b| {
             b.iter(|| $histogram.increment(u64::MAX))
         });
-
         group.finish();
     };
 }
 
 fn histogram_u64(c: &mut Criterion) {
-    let mut histogram = histogram::Histogram::<u64>::new(7, 64).unwrap();
+    let mut histogram = histogram::Histogram::new(7, 64).unwrap();
     benchmark!("histogram/u64", histogram, c);
 }
-
 fn histogram_u32(c: &mut Criterion) {
-    let mut histogram = histogram::Histogram::<u32>::new(7, 64).unwrap();
+    let mut histogram = histogram::Histogram32::new(7, 64).unwrap();
     benchmark!("histogram/u32", histogram, c);
 }
-
 fn atomic_u64(c: &mut Criterion) {
-    let histogram = histogram::AtomicHistogram::<u64>::new(7, 64).unwrap();
+    let histogram = histogram::AtomicHistogram::new(7, 64).unwrap();
     benchmark!("atomic_histogram/u64", histogram, c);
 }
-
 fn atomic_u32(c: &mut Criterion) {
-    let histogram = histogram::AtomicHistogram::<u32>::new(7, 64).unwrap();
+    let histogram = histogram::AtomicHistogram32::new(7, 64).unwrap();
     benchmark!("atomic_histogram/u32", histogram, c);
 }
 
-criterion_group!(
-    benches,
-    histogram_u64,
-    histogram_u32,
-    atomic_u64,
-    atomic_u32
-);
+criterion_group!(benches, histogram_u64, histogram_u32, atomic_u64, atomic_u32);
 criterion_main!(benches);
 ```
 
-- [ ] **Step 2: Verify benches compile**
+- [ ] **Step 2: Verify + commit**
 
 Run: `cargo bench --no-run`
-Expected: clean build of the bench binary.
-
-- [ ] **Step 3: Commit**
 
 ```bash
-git add benches/histogram.rs
-git commit -m "add u32 benchmark cases for Histogram and AtomicHistogram
-
-Confirms no regression on the u64 path and gives baseline numbers for
-the new u32 instantiations."
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add benches/histogram.rs
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "add u32 benchmark cases for Histogram and AtomicHistogram"
 ```
 
----
-
-## Task 10: Documentation updates
+## Task 10: Documentation + version bump
 
 **Files:**
 - Modify: `README.md`
-- Modify: `src/lib.rs`
-- Modify: `src/standard.rs` (per-type rustdoc one-liner)
-- Modify: `src/atomic.rs` (per-type rustdoc one-liner)
-- Modify: `src/sparse.rs` (per-type rustdoc one-liner)
-- Modify: `src/cumulative.rs` (per-type rustdoc one-liner)
-- Modify: `src/config.rs` (footnote on memory table)
+- Modify: `src/lib.rs` (rustdoc + Types section)
+- Modify: `src/config.rs` (memory-table footnote)
+- Modify: `Cargo.toml` (version → `1.3.0-alpha.0` or next alpha)
 
 - [ ] **Step 1: Update `README.md`**
 
-Insert two new sections between the existing "Histogram Types" and "Features" sections.
-
-After the existing `## Histogram Types` block, insert:
+After the existing "Histogram Types" section, insert:
 
 ```markdown
 ## Counter Width
 
-All four histogram types are generic over a counter width `C: Count`,
-defaulted to `u64`. Existing code (`Histogram::new(7, 64)`) keeps working
-unchanged. To opt into `u32` counters — halving memory and on-the-wire
-size at the cost of a 4.3 billion count ceiling per bucket — annotate the
-type:
+All four histogram types ship in two flavors:
 
-```rust
-use histogram::Histogram;
-let mut h = Histogram::<u32>::new(7, 64).unwrap();
-```
+- **u64-counter family** (`Histogram`, `AtomicHistogram`, `SparseHistogram`, `CumulativeROHistogram`): the default. Counts up to 2^64 − 1 per bucket.
+- **u32-counter siblings** (`Histogram32`, `AtomicHistogram32`, `SparseHistogram32`, `CumulativeROHistogram32`): half the memory and serialization size, counts up to 2^32 − 1 per bucket.
 
-The `Count` trait is sealed: only `u32` and `u64` are supported.
+Pick the family based on the memory/range tradeoff. Conversions:
 
-Conversions:
-
-- **Widening** (`u32` → `u64`) is infallible and exposed via `From`.
-- **Narrowing** (`u64` → `u32`) is fallible (`Err(Overflow)`) and exposed
-  via `TryFrom`. Direct cross-variant + narrowing paths
-  (`Histogram<u64>` → `CumulativeROHistogram<u32>`, etc.) are also provided.
+- **Widening** (`u32` → `u64`) is infallible (`From`).
+- **Narrowing** (`u64` → `u32`) is fallible (`TryFrom`, returns `Err(Overflow)`). Direct cross-variant + narrowing paths support the snapshot pipeline.
 
 ## Recommended Pipeline
 
-Pick the counter width based on the *role* the histogram plays in your data flow:
+Pick the histogram type based on the *role* it plays in your data flow:
 
-- **Recording — `AtomicHistogram<u64>` (or `Histogram<u64>`).** Use `u64`
-  for the long-running, continuously-updated histogram. Counts here are
-  unbounded over the lifetime of the process; `u64` heads off any
-  practical risk of overflow.
-
-- **Snapshot delta — `Histogram<u64>`, then narrowed.** When you take
-  periodic snapshots and compute a delta with `checked_sub`, the delta
-  covers only the activity in one window. Window counts are typically
-  much smaller than lifetime counts, which is exactly when narrowing pays
-  off.
-
-- **Read-only analytics — `CumulativeROHistogram<u32>`.** This is the
-  recommended storage and query format for completed snapshots. The
-  cumulative-prefix-sum representation gives you O(log n) quantile queries
-  via binary search, while `u32` counts halve the on-the-wire and on-disk
-  size versus `u64`. Narrowing is checked once against the *total count*
-  (cheaper than per-bucket), and any total ≤ ~4.3B fits.
+- **Recording — `AtomicHistogram` (or `Histogram`).** Use u64-counter types for the long-running, continuously-updated histogram. Counts here are unbounded over the lifetime of the process; `u64` heads off any practical risk of overflow.
+- **Snapshot delta — `Histogram`, then narrowed.** When you take periodic snapshots and compute a delta with `checked_sub`, the delta covers only the activity in one window. Use `Histogram::checked_sub` to compute the delta, then `TryFrom` to narrow into a `*32` type.
+- **Read-only analytics — `CumulativeROHistogram32`.** This is the recommended storage and query format for completed snapshots. The cumulative-prefix-sum representation gives you O(log n) quantile queries via binary search, while `u32` counts halve the on-the-wire and on-disk size versus `u64`. Narrowing is checked once against the *total count* (cheaper than per-bucket), and any total ≤ ~4.3B fits.
 
 ```rust
-use histogram::{AtomicHistogram, CumulativeROHistogram, Histogram};
+use histogram::{AtomicHistogram, CumulativeROHistogram32, Histogram};
 
-// Recording: u64, atomic, long-lived
-let recorder = AtomicHistogram::<u64>::new(7, 64).unwrap();
+let recorder = AtomicHistogram::new(7, 64).unwrap();
 # let snap_t0 = recorder.load();
-
-// Snapshot pipeline (run periodically)
-let snap_t1 = recorder.load();                              // Histogram<u64>
-let delta = snap_t1.checked_sub(&snap_t0).unwrap();         // Histogram<u64> — small counts
-let analytic: CumulativeROHistogram<u32> =
-    CumulativeROHistogram::<u32>::try_from(&delta).unwrap(); // narrow + cumulative in one pass
-// analytic is now ready to ship/store/query
+let snap_t1 = recorder.load();
+let delta = snap_t1.checked_sub(&snap_t0).unwrap();
+let analytic: CumulativeROHistogram32 =
+    CumulativeROHistogram32::try_from(&delta).unwrap();
 ```
 
-If you don't take snapshots — i.e., you query the recording histogram
-directly — just stay on `u64` everywhere. The narrowing optimization is
-specifically for the snapshot/delta pattern.
+If you don't take snapshots — i.e., you query the recording histogram directly — just stay on the u64 types everywhere. The narrowing optimization is specifically for the snapshot/delta pattern.
+
+For JavaScript-frontend plotting specifically, prefer `CumulativeROHistogram32` over a hypothetical f32-backed alternative: `u32` is exact up to ~4.3B (vs f32 exact only to ~16M), and cumulative-monotonicity is structurally preserved (no rounding-induced plateau artifacts in ECDF rendering).
 ```
+
+Update the existing "Histogram Types" section to add four `*32` bullets.
 
 - [ ] **Step 2: Update `src/lib.rs` module rustdoc**
 
-Mirror the same two sections in the crate-level `//!` rustdoc block. Place them after the existing `# Example` section and before `# Background`.
+Mirror the "Counter Width" and "Recommended Pipeline" sections in the crate-level `//!` rustdoc. Update the `# Types` list to mention all eight types. The doctest example may need a `# let snap_t0 = recorder.load();` hidden line to compile.
 
-Find the existing `//! # Background` line in `src/lib.rs` and insert before it:
+- [ ] **Step 3: Per-type rustdoc**
 
-```rust
-//! # Counter Width
-//!
-//! All four histogram types are generic over a counter width `C: Count`,
-//! defaulted to `u64`. To opt into `u32` counters (halving memory at the
-//! cost of a 4.3-billion-count ceiling per bucket), annotate the type:
-//!
-//! ```
-//! use histogram::Histogram;
-//! let mut h = Histogram::<u32>::new(7, 64).unwrap();
-//! ```
-//!
-//! The [`Count`] trait is sealed: only `u32` and `u64` are supported.
-//!
-//! Widening (`u32` → `u64`) is infallible (`From`); narrowing
-//! (`u64` → `u32`) is fallible (`TryFrom`, returning [`Error::Overflow`]).
-//! Direct cross-variant + narrowing paths support the snapshot pipeline.
-//!
-//! # Recommended Pipeline
-//!
-//! Pick the counter width based on the *role* the histogram plays:
-//!
-//! - **Recording — `AtomicHistogram<u64>` or `Histogram<u64>`.** Counts
-//!   are unbounded over the lifetime of the process; `u64` is the safe
-//!   choice.
-//! - **Snapshot delta — `Histogram<u64>`, then narrowed.** Compute the
-//!   delta with `checked_sub`, then `TryFrom` into the analytics type.
-//! - **Read-only analytics — `CumulativeROHistogram<u32>`.** Halved size,
-//!   O(log n) quantile queries, total-count check is cheaper than
-//!   per-bucket.
-//!
-//! ```
-//! use histogram::{AtomicHistogram, CumulativeROHistogram, Histogram};
-//!
-//! let recorder = AtomicHistogram::<u64>::new(7, 64).unwrap();
-//! # let snap_t0 = recorder.load();
-//! let snap_t1 = recorder.load();
-//! let delta = snap_t1.checked_sub(&snap_t0).unwrap();
-//! let analytic: CumulativeROHistogram<u32> =
-//!     CumulativeROHistogram::<u32>::try_from(&delta).unwrap();
-//! ```
-```
+The macro emits a generic doc comment for each type. To customize per-invocation, modify each macro to accept a leading `#[doc = "..."]` attribute. Quick approach: extract the type-specific doc into a separate `/// ...` comment placed immediately before the `pub struct $name { ... }` line inside the macro body, and parameterize the doc via a `$doc:literal` macro argument.
 
-- [ ] **Step 3: Update the `# Types` list in `src/lib.rs` rustdoc**
+If that complicates the macro, a simpler approach: post-macro, write a separate `impl <type> { /* no methods */ }` block with module-level rustdoc comments that document the type's purpose. The `*32` types each get a one-paragraph rustdoc covering counter width, memory tradeoff, overflow ceiling, and a pointer to the conversion API.
 
-Replace the existing types list with:
+- [ ] **Step 4: Memory-table footnote in `src/config.rs`**
+
+After the existing memory table block, append:
 
 ```rust
-//! # Types
-//!
-//! - [`Histogram<C>`] — standard histogram with non-atomic counters of
-//!   width `C` (defaults to `u64`). Use for single-threaded recording and
-//!   percentile queries.
-//! - [`AtomicHistogram<C>`] — atomic histogram for concurrent recording
-//!   (defaults to `u64`). Take a snapshot with [`AtomicHistogram::load`]
-//!   or [`AtomicHistogram::drain`] to query percentiles.
-//! - [`SparseHistogram<C>`] — compact representation storing only
-//!   non-zero buckets (defaults to `u64`). Useful for serialization and
-//!   storage.
-//! - [`CumulativeROHistogram<C>`] — read-only histogram with cumulative
-//!   counts for fast quantile queries via binary search (defaults to
-//!   `u64`).
+/// Halve all sizes for `*32` histograms (`Histogram32`, `AtomicHistogram32`,
+/// `SparseHistogram32`, `CumulativeROHistogram32`).
 ```
 
-- [ ] **Step 4: Add per-type rustdoc one-liners**
-
-For each of the four histogram types, add a one-line note to the existing rustdoc just above the `pub struct` declaration. Specifically:
-
-In `src/standard.rs`, find:
-```rust
-/// A histogram that uses plain 64bit counters for each bucket.
-```
-Replace with:
-```rust
-/// A histogram that uses plain counters for each bucket.
-///
-/// Generic over counter width `C`. Defaults to `u64`. See the crate-level
-/// docs for guidance on choosing between `u32` and `u64`.
-```
-
-In `src/atomic.rs`, find:
-```rust
-/// A histogram that uses atomic 64bit counters for each bucket.
-///
-/// Unlike the non-atomic variant, it cannot be used directly to report
-/// percentiles. Instead, a snapshot must be taken which captures the state of
-/// the histogram at a point in time.
-```
-Replace with:
-```rust
-/// A histogram that uses atomic counters for each bucket.
-///
-/// Generic over counter width `C`. Defaults to `u64`. See the crate-level
-/// docs for guidance on choosing between `u32` and `u64`.
-///
-/// Unlike the non-atomic variant, it cannot be used directly to report
-/// percentiles. Instead, a snapshot must be taken which captures the state of
-/// the histogram at a point in time.
-```
-
-In `src/sparse.rs`, find the existing `/// A sparse, columnar representation...` block and append after the existing description:
-```rust
-///
-/// Generic over counter width `C`. Defaults to `u64`. See the crate-level
-/// docs for guidance on choosing between `u32` and `u64`.
-```
-
-In `src/cumulative.rs`, find the existing `/// A read-only, cumulative histogram...` block and append after the last paragraph (before `#[derive...]`):
-```rust
-///
-/// Generic over counter width `C`. Defaults to `u64`. See the crate-level
-/// docs for guidance on choosing between `u32` and `u64`.
-```
-
-- [ ] **Step 5: Add memory-table footnote in `src/config.rs`**
-
-In `src/config.rs`, immediately after the existing memory table (the `///` block ending in `|    12 | .025% | 160 KiB | 672 KiB | 1.7 MiB |`), add:
-
-```rust
-/// Halve all sizes for histograms instantiated with `<u32>` counters.
-```
-
-- [ ] **Step 6: Build documentation locally**
+- [ ] **Step 5: Build docs locally**
 
 Run: `cargo doc --no-deps`
 Expected: clean build, no broken intra-doc links.
 
 Run: `cargo test --doc`
-Expected: doctests pass (the new examples in lib.rs and README run via doctest).
+Expected: doctests pass.
 
-- [ ] **Step 7: Run the full test suite once more**
+- [ ] **Step 6: Bump version in `Cargo.toml`**
 
-Run: `cargo test`
-Expected: all unit tests + doc tests pass.
+Set `version = "1.3.0-alpha.0"` (or next alpha if `main` has advanced).
 
-- [ ] **Step 8: Bump version in `Cargo.toml`**
-
-Find the current version in `Cargo.toml` (`1.2.0` per the spec capture). Change to:
-
-```toml
-version = "1.3.0-alpha.0"
-```
-
-If the alpha revision has already been bumped on `main` since the spec was written, set to `1.3.0-alpha.<next>` per the project versioning rule.
-
-- [ ] **Step 9: Commit**
+- [ ] **Step 7: Commit (final commit retains Co-Authored-By trailer per user instruction)**
 
 ```bash
-git add README.md src/lib.rs src/standard.rs src/atomic.rs src/sparse.rs src/cumulative.rs src/config.rs Cargo.toml
-git commit -m "$(cat <<'EOF'
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts add README.md src/lib.rs src/config.rs Cargo.toml
+git -C /Users/yao/workspace/histogram/.worktrees/u32-bucket-counts commit -m "$(cat <<'EOF'
 add docs and bump version for u32 bucket counts
 
 - README: new "Counter Width" and "Recommended Pipeline" sections
 - lib.rs: matching rustdoc with the snapshot pipeline guidance
-- per-type rustdoc: note generic-over-C with u64 default
+- per-type rustdoc: note the *32 sibling family
 - config.rs: footnote on the memory table
-- Cargo.toml: bump to 1.3.0-alpha.0 per project versioning rule
+- Cargo.toml: bump to 1.3.0-alpha.0
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -1808,54 +1736,31 @@ EOF
 
 ## Final Verification
 
-- [ ] **Step 1: Full test suite**
-
-Run: `cargo test`
-Expected: every unit test, integration test, and doctest passes.
-
-- [ ] **Step 2: Bench compile**
-
-Run: `cargo bench --no-run`
-Expected: bench binary builds cleanly.
-
-- [ ] **Step 3: Lint check**
-
-Run: `cargo clippy --all-targets -- -D warnings`
-Expected: no warnings.
-
-- [ ] **Step 4: Doc build**
-
-Run: `cargo doc --no-deps`
-Expected: clean build of public-facing docs.
-
-- [ ] **Step 5: Confirm with the user before opening a PR.** Per the project's CLAUDE.md, do not push or open a PR without explicit permission.
+- [ ] **Full test suite:** `cargo test` — every unit / integration / doctest passes.
+- [ ] **Bench compile:** `cargo bench --no-run` — clean.
+- [ ] **Lint:** `cargo clippy --all-targets -- -D warnings` — no warnings.
+- [ ] **Docs:** `cargo doc --no-deps` — clean.
+- [ ] **Confirm with user before opening PR** per CLAUDE.md.
 
 ---
 
 ## Self-Review Notes
 
-Spec coverage check (run after writing the plan):
+**Spec coverage:**
+- ✅ Count trait (Task 1, already shipped)
+- ✅ Histogram macro pair → Task 2 + Task 4 step 3
+- ✅ AtomicHistogram macro pair → Task 3 + Task 4 step 4
+- ✅ SparseHistogram macro pair → Task 4
+- ✅ CumulativeROHistogram macro pair → Task 5
+- ✅ Same-width cross-variant From impls → Tasks 2, 4, 5 (inside the macros)
+- ✅ Cross-width widening From → Task 6
+- ✅ Cross-width narrowing TryFrom → Task 7
+- ✅ Cross-variant + narrowing TryFrom → Task 8
+- ✅ Bench updates → Task 9
+- ✅ Documentation + version bump → Task 10
 
-- ✅ Section 1 (Count trait, AtomicCount, sealed) → Task 1.
-- ✅ Section 2 (Histogram<C>) → Task 2.
-- ✅ Section 2 (AtomicHistogram<C>, drain cfg-split) → Task 3.
-- ✅ Section 2 (SparseHistogram<C>) → Task 4.
-- ✅ Section 2 (CumulativeROHistogram<C>) → Task 5.
-- ✅ Section 2 (Bucket stays u64) → enforced in every generalization task via `.as_u128() as u64`.
-- ✅ Section 3 (same-width cross-variant From) → already generalized in Tasks 4 and 5.
-- ✅ Section 3 (cross-width widening From, same-variant) → Task 6.
-- ✅ Section 3 (cross-width narrowing TryFrom, same-variant) → Task 7.
-- ✅ Section 3 (cross-variant + narrowing TryFrom) → Task 8.
-- ✅ Section 5 (docs + recommended pipeline) → Task 10.
-- ✅ Testing (existing + u32 instantiations + width-specific tests) → distributed across Tasks 1–8.
-- ✅ Bench updates → Task 9.
-- ✅ Versioning → Task 10 step 8.
-- ✅ No deprecation work, no Cargo.toml feature changes — both are explicitly out of scope.
+**Type-name consistency:** struct names (`Histogram`, `Histogram32`, etc.), iterator names (`Iter` / `Iter32`, `SparseIter` / `SparseIter32`, `CumulativeIter` / `CumulativeIter32`, `QuantileRangeIter` / `QuantileRangeIter32`), macro names (`define_histogram!`, `define_atomic_histogram!`, `define_sparse_histogram!`, `define_cumulative_histogram!`) used consistently across tasks.
 
-Type-consistency check:
+**Cross-task dependency hazard:** Tasks 2 and 3 reference types that don't exist until Task 4 completes. Plan handles this with commented-out invocations; Task 4 step 3/4 uncomments them.
 
-- `Count::ZERO`, `Count::ONE`, `Count::wrapping_add`, `Count::checked_add`, `Count::wrapping_sub`, `Count::checked_sub`, `Count::as_u128`, `Count::try_from_u64` referenced consistently across all tasks.
-- `AtomicCount::new`, `load_relaxed`, `store_relaxed`, `fetch_add_relaxed`, `swap_relaxed` consistent.
-- `pub(crate) fn add_at_index` introduced in Task 6 step 1 (added to `AtomicHistogram` for the widening path).
-- `Bucket.count` is `u64` throughout (never `C`).
-- `total_count` returns `u64` for both `Histogram` (via `QuantilesResult.total_count: u128` — unchanged) and `CumulativeROHistogram` (returns `u64`).
+**Deprecation notice:** Task 2 drops the deprecated `percentile`/`percentiles` inherent methods. Documented in Task 10 commit and CHANGELOG.
