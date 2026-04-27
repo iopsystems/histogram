@@ -1,51 +1,12 @@
 // Math helpers ported from the Observable notebook @iopsystems/h2-histogram.
 // All bucket counts that may exceed 2^53 are computed in BigInt.
 
-export type SummaryRow = {
-  p: number;
-  relativeError: string;
-  buckets: string;
-  size8: string;
-  size16: string;
-  size32: string;
-  size64: string;
-};
-
 export type BucketGroup = {
   width: bigint;
   lower: bigint;
   upper: bigint;
   buckets: bigint;
 };
-
-const KiB = 1024;
-const MiB = 1024 * 1024;
-
-function formatSize(bytes: number): string {
-  return bytes > MiB
-    ? (bytes / MiB).toFixed(1) + ' MiB'
-    : (bytes / KiB).toFixed(1) + ' KiB';
-}
-
-export function summarize(nVal = 64, pVals: number[] = defaultPVals()): SummaryRow[] {
-  return pVals.map((k) => {
-    const nbucket = (1n << BigInt(k)) * BigInt(nVal - k + 1);
-    const base = Number(nbucket);
-    return {
-      p: k,
-      relativeError: (2 ** -k * 100).toPrecision(3) + '%',
-      buckets: nbucket.toString(),
-      size8: formatSize(base),
-      size16: formatSize(base * 2),
-      size32: formatSize(base * 4),
-      size64: formatSize(base * 8),
-    };
-  });
-}
-
-export function defaultPVals(): number[] {
-  return [...Array(15).keys()].slice(2);
-}
 
 export function totalBuckets(n: number, p: number): bigint {
   return (1n << BigInt(p)) * BigInt(n - p + 1);

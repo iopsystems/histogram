@@ -5,10 +5,6 @@ description: 'A base-2 alternative to HDRHistogram with simpler, faster, more co
 ---
 
 import Calculator from '../components/Calculator.svelte';
-import { summarize } from '../lib/h2';
-
-export const summary64 = summarize(64);
-export const summary32 = summarize(32);
 
 # H2Histogram: A High Dynamic Range, Base-2 Histogram
 
@@ -96,62 +92,40 @@ The table below gives a sense of the total number of buckets and histogram
 size for various $p$ values, assuming we want to record values up to the
 maximum unsigned 64-bit integer.
 
-<table>
-  <thead>
-    <tr>
-      <th>p</th>
-      <th>relative error</th>
-      <th>#buckets</th>
-      <th>size (8-bit)</th>
-      <th>size (16-bit)</th>
-      <th>size (32-bit)</th>
-      <th>size (64-bit)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {summary64.map((row) => (
-      <tr>
-        <td>{row.p}</td>
-        <td>{row.relativeError}</td>
-        <td>{row.buckets}</td>
-        <td>{row.size8}</td>
-        <td>{row.size16}</td>
-        <td>{row.size32}</td>
-        <td>{row.size64}</td>
-      </tr>
-    ))}
-  </tbody>
-</table>
+| p  | relative error | #buckets | size (8-bit) | size (16-bit) | size (32-bit) | size (64-bit) |
+|----|----------------|---------:|-------------:|--------------:|--------------:|--------------:|
+| 2  | 25.0%          |      252 |      0.2 KiB |       0.5 KiB |       1.0 KiB |       2.0 KiB |
+| 3  | 12.5%          |      496 |      0.5 KiB |       1.0 KiB |       1.9 KiB |       3.9 KiB |
+| 4  | 6.25%          |      976 |      1.0 KiB |       1.9 KiB |       3.8 KiB |       7.6 KiB |
+| 5  | 3.13%          |     1920 |      1.9 KiB |       3.8 KiB |       7.5 KiB |      15.0 KiB |
+| 6  | 1.56%          |     3776 |      3.7 KiB |       7.4 KiB |      14.8 KiB |      29.5 KiB |
+| 7  | 0.781%         |     7424 |      7.3 KiB |      14.5 KiB |      29.0 KiB |      58.0 KiB |
+| 8  | 0.391%         |    14592 |     14.3 KiB |      28.5 KiB |      57.0 KiB |     114.0 KiB |
+| 9  | 0.195%         |    28672 |     28.0 KiB |      56.0 KiB |     112.0 KiB |     224.0 KiB |
+| 10 | 0.0977%        |    56320 |     55.0 KiB |     110.0 KiB |     220.0 KiB |     440.0 KiB |
+| 11 | 0.0488%        |   110592 |    108.0 KiB |     216.0 KiB |     432.0 KiB |     864.0 KiB |
+| 12 | 0.0244%        |   217088 |    212.0 KiB |     424.0 KiB |     848.0 KiB |       1.7 MiB |
+| 13 | 0.0122%        |   425984 |    416.0 KiB |     832.0 KiB |       1.6 MiB |       3.3 MiB |
+| 14 | 0.00610%       |   835584 |    816.0 KiB |       1.6 MiB |       3.2 MiB |       6.4 MiB |
 
 If input values are 32-bit integers, which is also common, the histograms
 are much smaller.
 
-<table>
-  <thead>
-    <tr>
-      <th>p</th>
-      <th>relative error</th>
-      <th>#buckets</th>
-      <th>size (8-bit)</th>
-      <th>size (16-bit)</th>
-      <th>size (32-bit)</th>
-      <th>size (64-bit)</th>
-    </tr>
-  </thead>
-  <tbody>
-    {summary32.map((row) => (
-      <tr>
-        <td>{row.p}</td>
-        <td>{row.relativeError}</td>
-        <td>{row.buckets}</td>
-        <td>{row.size8}</td>
-        <td>{row.size16}</td>
-        <td>{row.size32}</td>
-        <td>{row.size64}</td>
-      </tr>
-    ))}
-  </tbody>
-</table>
+| p  | relative error | #buckets | size (8-bit) | size (16-bit) | size (32-bit) | size (64-bit) |
+|----|----------------|---------:|-------------:|--------------:|--------------:|--------------:|
+| 2  | 25.0%          |      124 |      0.1 KiB |       0.2 KiB |       0.5 KiB |       1.0 KiB |
+| 3  | 12.5%          |      240 |      0.2 KiB |       0.5 KiB |       0.9 KiB |       1.9 KiB |
+| 4  | 6.25%          |      464 |      0.5 KiB |       0.9 KiB |       1.8 KiB |       3.6 KiB |
+| 5  | 3.13%          |      896 |      0.9 KiB |       1.8 KiB |       3.5 KiB |       7.0 KiB |
+| 6  | 1.56%          |     1728 |      1.7 KiB |       3.4 KiB |       6.8 KiB |      13.5 KiB |
+| 7  | 0.781%         |     3328 |      3.3 KiB |       6.5 KiB |      13.0 KiB |      26.0 KiB |
+| 8  | 0.391%         |     6400 |      6.3 KiB |      12.5 KiB |      25.0 KiB |      50.0 KiB |
+| 9  | 0.195%         |    12288 |     12.0 KiB |      24.0 KiB |      48.0 KiB |      96.0 KiB |
+| 10 | 0.0977%        |    23552 |     23.0 KiB |      46.0 KiB |      92.0 KiB |     184.0 KiB |
+| 11 | 0.0488%        |    45056 |     44.0 KiB |      88.0 KiB |     176.0 KiB |     352.0 KiB |
+| 12 | 0.0244%        |    86016 |     84.0 KiB |     168.0 KiB |     336.0 KiB |     672.0 KiB |
+| 13 | 0.0122%        |   163840 |    160.0 KiB |     320.0 KiB |     640.0 KiB |       1.3 MiB |
+| 14 | 0.00610%       |   311296 |    304.0 KiB |     608.0 KiB |       1.2 MiB |       2.4 MiB |
 
 ### Bucket Layout
 
