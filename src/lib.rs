@@ -7,13 +7,18 @@
 //!
 //! - [`Histogram`] — standard histogram with `u64` counters. Use for
 //!   single-threaded recording and percentile queries.
+//! - [`Histogram32`] — like [`Histogram`] but with `u32` counters.
 //! - [`AtomicHistogram`] — atomic histogram for concurrent recording. Take a
 //!   snapshot with [`AtomicHistogram::load`] or [`AtomicHistogram::drain`] to
 //!   query percentiles.
+//! - [`AtomicHistogram32`] — like [`AtomicHistogram`] but with `u32` counters.
 //! - [`SparseHistogram`] — compact representation storing only non-zero
 //!   buckets. Useful for serialization and storage.
+//! - [`SparseHistogram32`] — like [`SparseHistogram`] but with `u32` counters.
 //! - [`CumulativeROHistogram`] — read-only histogram with cumulative counts
 //!   for fast quantile queries via binary search.
+//! - [`CumulativeROHistogram32`] — like [`CumulativeROHistogram`] but with
+//!   `u32` counters.
 //!
 //! # Example
 //!
@@ -37,6 +42,42 @@
 //! let p99 = r99.get(&Quantile::new(0.99).unwrap()).unwrap();
 //! println!("p50: {}-{}", p50.start(), p50.end());
 //! println!("p99: {}-{}", p99.start(), p99.end());
+//! ```
+//!
+//! # Counter Width
+//!
+//! All four histogram types ship in two flavors:
+//!
+//! - u64-counter family ([`Histogram`], [`AtomicHistogram`],
+//!   [`SparseHistogram`], [`CumulativeROHistogram`]): the default.
+//! - u32-counter siblings ([`Histogram32`], [`AtomicHistogram32`],
+//!   [`SparseHistogram32`], [`CumulativeROHistogram32`]): half the memory
+//!   and serialization size; counts up to 2^32 − 1 per bucket.
+//!
+//! Conversions: widening (`u32` → `u64`) is infallible (`From`); narrowing
+//! (`u64` → `u32`) is fallible (`TryFrom`, returns [`Error::Overflow`]).
+//! Direct cross-variant + narrowing paths support the snapshot pipeline.
+//!
+//! # Recommended Pipeline
+//!
+//! Pick the histogram type based on the *role* it plays:
+//!
+//! - **Recording — `AtomicHistogram` or `Histogram`.** Counts are unbounded
+//!   over the lifetime of the process; `u64` is the safe choice.
+//! - **Snapshot delta — `Histogram`, then narrowed.** Compute the delta with
+//!   `checked_sub`, then `TryFrom` into the analytics type.
+//! - **Read-only analytics — `CumulativeROHistogram32`.** Halved size, O(log n)
+//!   quantile queries, total-count check is cheaper than per-bucket.
+//!
+//! ```
+//! use histogram::{AtomicHistogram, CumulativeROHistogram32, Histogram};
+//!
+//! let recorder = AtomicHistogram::new(7, 64).unwrap();
+//! # let snap_t0 = recorder.load();
+//! let snap_t1 = recorder.load();
+//! let delta = snap_t1.checked_sub(&snap_t0).unwrap();
+//! let analytic: CumulativeROHistogram32 =
+//!     CumulativeROHistogram32::try_from(&delta).unwrap();
 //! ```
 //!
 //! # Background
