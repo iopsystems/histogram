@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "notebooks preview --root src",
-    "build": "notebooks build --root src --out ../dist --empty -- src/*.html"
+    "dev": "notebooks preview --root src --template src/template.html",
+    "build": "notebooks build --root src --out ../dist --empty --template src/template.html -- src/index.html"
   },
   "dependencies": {
     "@observablehq/notebook-kit": "^1.5.2"
