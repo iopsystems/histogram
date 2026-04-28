@@ -43,6 +43,7 @@
 mod atomic;
 mod bucket;
 mod config;
+mod count;
 mod cumulative;
 mod errors;
 mod quantile;
@@ -52,6 +53,7 @@ mod standard;
 pub use atomic::AtomicHistogram;
 pub use bucket::Bucket;
 pub use config::Config;
+pub use count::{AtomicCount, Count};
 pub use cumulative::CumulativeROHistogram;
 pub use errors::Error;
 pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};

@@ -47,7 +47,7 @@
   </script>
 
   <script type="module">
-    const n = view(Inputs.range([8, 64], {value: 64, step: 1, label: tex`n`}));
+    const n = view(Inputs.range([8, 64], { value: 64, step: 1, label: tex`n` }));
   </script>
 
   <script type="module">
@@ -64,7 +64,7 @@
   </script>
 
   <script type="module">
-    const p = view(Inputs.range([2, 22], {value: 10, step: 1, label: tex`p`}));
+    const p = view(Inputs.range([2, 22], { value: 10, step: 1, label: tex`p` }));
   </script>
 
   <script type="module">
@@ -84,17 +84,13 @@
     error constraint, ${tex`e`}.
 
     The smallest value that allows bucket width to go from ${tex`1`}
-    (${tex`2^0`}) to ${tex`2`} (${tex`2^1`}) is ${tex`\frac{2}{e}`} (or
-    ${tex`2^{p+1}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 2}.
-    This means there are ${tex`2^{p+1}`} precise buckets.
+    (${tex`2^0`}) to ${tex`2`} (${tex`2^1`}) is ${tex`\frac{2}{e}`} (or ${tex`2^{p+1}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 2}. This means there are ${tex`2^{p+1}`} precise buckets.
 
     Bucket width can be doubled from ${tex`2`} (${tex`2^1`}) to ${tex`4`}
-    (${tex`2^2`}) for values greater than or equal to ${tex`\frac{4}{e}`} (or
-    ${tex`2^{p+2}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 4}.
+    (${tex`2^2`}) for values greater than or equal to ${tex`\frac{4}{e}`} (or ${tex`2^{p+2}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 4}.
     This also means there are ${tex`2^p`} buckets of width 2.
 
-    So on and so forth, until the threshold value reaches the maximum value
-    ${tex`N`}. At that point, there will be ${tex`(n - p)`} **groups** of
+    So on and so forth, until the threshold value reaches the maximum value ${tex`N`}. At that point, there will be ${tex`(n - p)`} **groups** of
     buckets of doubling widths. For ${tex`n = ${n}`} and ${tex`p = ${p}`},
     the number of groups is ${n - p}.
 
@@ -185,7 +181,7 @@
   </script>
 
   <script type="module">
-    display(Inputs.table(buckets, {rows: 16}));
+    display(Inputs.table(buckets, { rows: 16 }));
   </script>
 
   <script type="text/markdown">
@@ -350,7 +346,7 @@
   </script>
 
   <script type="module">
-    const l = view(Inputs.range([0, n - 1], {value: Math.min(10, n - 1), step: 1, label: tex`l`}));
+    const l = view(Inputs.range([0, n - 1], { value: Math.min(10, n - 1), step: 1, label: tex`l` }));
   </script>
 
   <script type="module">
