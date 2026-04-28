@@ -106,8 +106,7 @@
   </script>
 
   <script type="text/markdown">
-    - Total number of buckets: ${tex`(n - p + 1) \times 2^p`}. For
-      ${tex`n = ${n}`} and ${tex`p = ${p}`}, that is **${total_buckets.toString()}**
+    - Total number of buckets: ${tex`(n - p + 1) \times 2^p`}. For ${tex`n = ${n}`} and ${tex`p = ${p}`}, that is **${total_buckets.toString()}**
       buckets.
     - Histogram size: number of buckets multiplied by counter size. For
       ${tex`n = ${n}`} and ${tex`p = ${p}`}, that is
@@ -181,7 +180,7 @@
   </script>
 
   <script type="module">
-    display(Inputs.table(buckets, { rows: 16 }));
+    display(Inputs.table(buckets, { rows: 16, select: false }));
   </script>
 
   <script type="text/markdown">
@@ -209,14 +208,11 @@
     #### Explanation
 
     In the above algorithm, the highest non-zero digit ${tex`h`} tells us the
-    width of the bucket that should record the input value ${tex`V`}. For
-    ${tex`h \le p`} the bucket width is ${tex`2^0`}; for ${tex`h = p + 1`}
+    width of the bucket that should record the input value ${tex`V`}. For ${tex`h \le p`} the bucket width is ${tex`2^0`}; for ${tex`h = p + 1`}
     the bucket width is ${tex`2^1`}; etc. For any positive ${tex`w`}, the
-    total number of buckets with a width *less than* ${tex`2^w`} is
-    ${tex`(w+1) \times 2^p`}.
+    total number of buckets with a width *less than* ${tex`2^w`} is ${tex`(w+1) \times 2^p`}.
 
-    There are ${tex`2^p`} buckets of width ${tex`2^w`}, with a lower bound
-    ${tex`2^h`} as the value. To find out which bucket in this group is the
+    There are ${tex`2^p`} buckets of width ${tex`2^w`}, with a lower bound ${tex`2^h`} as the value. To find out which bucket in this group is the
     right one for ${tex`V`}, we compute the distance between ${tex`V`} and
     the lower bound, and divide that by the bucket width of the current
     group. Since all bounds are powers of 2, the division is converted to a
@@ -263,9 +259,7 @@
 
     To reduce the number of buckets traversed during lookup, one can store
     the total number of counts, ${tex`C`}, across all buckets, and return
-    when the buckets traversed so far yield a cumulative count greater than
-    ${tex`q \times C`} (if traversing from the lowest bucket) or
-    ${tex`(1 - q) \times C`} (if traversing from the highest bucket).
+    when the buckets traversed so far yield a cumulative count greater than ${tex`q \times C`} (if traversing from the lowest bucket) or ${tex`(1 - q) \times C`} (if traversing from the highest bucket).
     Further reduction can be achieved by using some type of "sketch" that
     stores cumulative values across multiple buckets, which allows the
     cursor to jump over many buckets at a time. The tradeoff is that
@@ -324,13 +318,10 @@
 
     In fact, having a lower bound could potentially meaningfully reduce the
     amount of memory needed to store a histogram, because smaller values are
-    stored in finer buckets. For example, for ${tex`n = 32`} and
-    ${tex`p = 8`}, if we know the lower bound of values is 1024, we can
-    eliminate 768 out of 6400 buckets, a 12% reduction.
+    stored in finer buckets. For example, for ${tex`n = 32`} and ${tex`p = 8`}, if we know the lower bound of values is 1024, we can eliminate 768 out of 6400 buckets, a 12% reduction.
 
     More precisely, if we know the lower bound is at least ${tex`2^l`}, we
-    can eliminate ${tex`2^l`} buckets (if ${tex`l \le p+1`}) or
-    ${tex`(l - p + 1) \times 2^p`} buckets (if ${tex`l > p + 1`}).
+    can eliminate ${tex`2^l`} buckets (if ${tex`l \le p+1`}) or ${tex`(l - p + 1) \times 2^p`} buckets (if ${tex`l > p + 1`}).
 
     How common do values have lower bounds? In high-level time measurements
     in particular, this condition is extremely common. For example, if we
