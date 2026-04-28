@@ -1,0 +1,365 @@
+<!doctype html>
+<notebook theme="air">
+  <title>H2Histogram: Base-2 Redesign of HdrHistogram for Unbeatable Performance</title>
+
+  <script type="text/html">
+    <style>
+      :root { --max-width: 1100px; }
+      p, h1, h2, h3, h4, h5, h6, table, figure, figcaption, .katex-display { max-width: 760px; }
+      blockquote, ul, ol { max-width: 720px; }
+    </style>
+  </script>
+
+  <script type="text/markdown">
+    # H2Histogram: Base-2 Redesign of HdrHistogram for Unbeatable Performance
+
+    The H2Histogram provides a histogram that is conceptually similar to
+    [HdrHistogram](http://www.hdrhistogram.org/), with modifications to the
+    bucket construction algorithm and configurable options.
+
+    ## Background and Assumptions
+
+    ### Background
+
+    Recording and reporting quantile metrics is a very common task, and highly
+    valuable in characterizing workload and performance. Usually, system
+    input/output and behavior have a wide but bounded range of acceptable
+    values, and tracking the distribution within this range at a certain
+    precision provides rich insights into the workload. In high-throughput
+    scenarios, HdrHistogram is highly popular due to its low recording
+    overhead. However, HdrHistogram is a base-10 design. We believe a base-2
+    variant works even better in terms of speed, simplicity, and
+    configurability.
+
+    ### Assumptions
+
+    Below are our core assumptions:
+
+    1. Bucket widths are powers of 2, and monotonically increasing for larger values
+    2. We want to accept any natural number up to the maximum value allowed
+    3. Using relative error as a constraint, the goal is to primarily maximize
+       recording throughput and secondarily minimize memory space
+
+    ### Goals
+
+    H2Histogram aims to provide a simpler implementation, finer-grain
+    configuration, and more efficient runtime compared to the reference
+    implementation provided by HdrHistogram.
+
+    ## Basic Parameters
+
+    **Maximum value in histogram**: ${tex.block`N = 2^n - 1`}
+
+    This is the largest value the histogram can track, parameterized by the
+    exponent ${tex`n`}.
+  </script>
+
+  <script type="module">
+    const n = view(Inputs.range([8, 64], { value: 64, step: 1, label: tex`n` }));
+  </script>
+
+  <script type="module">
+    const N = (1n << BigInt(n)) - 1n;
+  </script>
+
+  <script type="text/markdown">
+    For ${tex`n = ${n}`}, ${tex`N`} = ${N.toString()}.
+
+    **Relative error**: ${tex.block`e = 2^{-p}`}
+
+    This is the upper bound on the relative error created by value
+    quantization, parameterized by the exponent (of its inverse), ${tex`p`}.
+  </script>
+
+  <script type="module">
+    const p = view(Inputs.range([2, 22], { value: 10, step: 1, label: tex`p` }));
+  </script>
+
+  <script type="module">
+    const e = 1 / 2 ** p;
+  </script>
+
+  <script type="text/markdown">
+    For ${tex`p = ${p}`}, ${tex`e = ${e.toPrecision(3)}`}.
+
+    **Note**: the concept of relative error does not apply when the exact
+    integer value is recorded.
+
+    ## Bucket Construction
+
+    We use a bucket width of just 1 for small integers. As the absolute value
+    goes up, we can double the bucket width without violating the relative
+    error constraint, ${tex`e`}.
+
+    The smallest value that allows bucket width to go from ${tex`1`}
+    (${tex`2^0`}) to ${tex`2`} (${tex`2^1`}) is ${tex`\frac{2}{e}`} (or ${tex`2^{p+1}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 2}. This means there are ${tex`2^{p+1}`} precise buckets.
+
+    Bucket width can be doubled from ${tex`2`} (${tex`2^1`}) to ${tex`4`}
+    (${tex`2^2`}) for values greater than or equal to ${tex`\frac{4}{e}`} (or ${tex`2^{p+2}`}). For ${tex`p = ${p}`}, that value is ${2 ** p * 4}.
+    This also means there are ${tex`2^p`} buckets of width 2.
+
+    So on and so forth, until the threshold value reaches the maximum value ${tex`N`}. At that point, there will be ${tex`(n - p)`} **groups** of
+    buckets of doubling widths. For ${tex`n = ${n}`} and ${tex`p = ${p}`},
+    the number of groups is ${n - p}.
+
+    **Note**: When ${tex`p = n - 1`}, the histogram will have the exact same
+    number of buckets as there are values. Notions of absolute and relative
+    errors do not apply in such a histogram.
+
+    ### Bucket Summary
+  </script>
+
+  <script type="module">
+    const total_buckets = (1n << BigInt(p)) * BigInt(n - p + 1);
+  </script>
+
+  <script type="text/markdown">
+    - Total number of buckets: ${tex`(n - p + 1) \times 2^p`}. For ${tex`n = ${n}`} and ${tex`p = ${p}`}, that is **${total_buckets.toString()}**
+      buckets.
+    - Histogram size: number of buckets multiplied by counter size. For
+      ${tex`n = ${n}`} and ${tex`p = ${p}`}, that is
+      **${((total_buckets * 8n) / 1024n).toString()} KiB** (64-bit counters)
+      or **${((total_buckets * 4n) / 1024n).toString()} KiB** (32-bit
+      counters).
+
+    The table below gives a sense of the total number of buckets and
+    histogram size for various ${tex`p`} values, assuming we want to record
+    values up to the maximum unsigned 64-bit integer.
+
+    | p  | relative error | #buckets | size (8-bit) | size (16-bit) | size (32-bit) | size (64-bit) |
+    |----|----------------|---------:|-------------:|--------------:|--------------:|--------------:|
+    | 2  | 25.0%          |      252 |      0.2 KiB |       0.5 KiB |       1.0 KiB |       2.0 KiB |
+    | 3  | 12.5%          |      496 |      0.5 KiB |       1.0 KiB |       1.9 KiB |       3.9 KiB |
+    | 4  | 6.25%          |      976 |      1.0 KiB |       1.9 KiB |       3.8 KiB |       7.6 KiB |
+    | 5  | 3.13%          |     1920 |      1.9 KiB |       3.8 KiB |       7.5 KiB |      15.0 KiB |
+    | 6  | 1.56%          |     3776 |      3.7 KiB |       7.4 KiB |      14.8 KiB |      29.5 KiB |
+    | 7  | 0.781%         |     7424 |      7.3 KiB |      14.5 KiB |      29.0 KiB |      58.0 KiB |
+    | 8  | 0.391%         |    14592 |     14.3 KiB |      28.5 KiB |      57.0 KiB |     114.0 KiB |
+    | 9  | 0.195%         |    28672 |     28.0 KiB |      56.0 KiB |     112.0 KiB |     224.0 KiB |
+    | 10 | 0.0977%        |    56320 |     55.0 KiB |     110.0 KiB |     220.0 KiB |     440.0 KiB |
+    | 11 | 0.0488%        |   110592 |    108.0 KiB |     216.0 KiB |     432.0 KiB |     864.0 KiB |
+    | 12 | 0.0244%        |   217088 |    212.0 KiB |     424.0 KiB |     848.0 KiB |       1.7 MiB |
+    | 13 | 0.0122%        |   425984 |    416.0 KiB |     832.0 KiB |       1.6 MiB |       3.3 MiB |
+    | 14 | 0.00610%       |   835584 |    816.0 KiB |       1.6 MiB |       3.2 MiB |       6.4 MiB |
+
+    If input values are 32-bit integers, which is also common, the histograms
+    are much smaller.
+
+    | p  | relative error | #buckets | size (8-bit) | size (16-bit) | size (32-bit) | size (64-bit) |
+    |----|----------------|---------:|-------------:|--------------:|--------------:|--------------:|
+    | 2  | 25.0%          |      124 |      0.1 KiB |       0.2 KiB |       0.5 KiB |       1.0 KiB |
+    | 3  | 12.5%          |      240 |      0.2 KiB |       0.5 KiB |       0.9 KiB |       1.9 KiB |
+    | 4  | 6.25%          |      464 |      0.5 KiB |       0.9 KiB |       1.8 KiB |       3.6 KiB |
+    | 5  | 3.13%          |      896 |      0.9 KiB |       1.8 KiB |       3.5 KiB |       7.0 KiB |
+    | 6  | 1.56%          |     1728 |      1.7 KiB |       3.4 KiB |       6.8 KiB |      13.5 KiB |
+    | 7  | 0.781%         |     3328 |      3.3 KiB |       6.5 KiB |      13.0 KiB |      26.0 KiB |
+    | 8  | 0.391%         |     6400 |      6.3 KiB |      12.5 KiB |      25.0 KiB |      50.0 KiB |
+    | 9  | 0.195%         |    12288 |     12.0 KiB |      24.0 KiB |      48.0 KiB |      96.0 KiB |
+    | 10 | 0.0977%        |    23552 |     23.0 KiB |      46.0 KiB |      92.0 KiB |     184.0 KiB |
+    | 11 | 0.0488%        |    45056 |     44.0 KiB |      88.0 KiB |     176.0 KiB |     352.0 KiB |
+    | 12 | 0.0244%        |    86016 |     84.0 KiB |     168.0 KiB |     336.0 KiB |     672.0 KiB |
+    | 13 | 0.0122%        |   163840 |    160.0 KiB |     320.0 KiB |     640.0 KiB |       1.3 MiB |
+    | 14 | 0.00610%       |   311296 |    304.0 KiB |     608.0 KiB |       1.2 MiB |       2.4 MiB |
+
+    ### Bucket Layout
+  </script>
+
+  <script type="module">
+    function compute_buckets(n, p) {
+      const groups = [];
+      let lower = 0n;
+      for (let w = 0; w + p < n; w++) {
+        const width = 1n << BigInt(w);
+        const upper = 1n << BigInt(p + w + 1);
+        groups.push({
+          width: width.toString(),
+          lower: lower.toString(),
+          upper: upper.toString(),
+          buckets: ((upper - lower) / width).toString()
+        });
+        lower = upper;
+      }
+      return groups;
+    }
+  </script>
+
+  <script type="module">
+    const buckets = compute_buckets(n, p);
+  </script>
+
+  <script type="module">
+    display(Inputs.table(buckets, { rows: 16, select: false }));
+  </script>
+
+  <script type="text/markdown">
+    ### Bucket Lookup
+
+    Bucket lookup is the primary operation for recording a value. The
+    following algorithm only applies to positive integers (i.e. zero values
+    are not allowed). Support for the zero value is trivially added as a
+    first step of the lookup implementation.
+
+    We represent the input value as an ${tex`n`}-digit binary:
+    ${tex.block`V = (a_{n-1}a_{n-2}\dots a_0)_2`}
+
+    Looking up the right bucket offset ${tex`b`} for ${tex`V`} works as
+    follows:
+
+    1. Find the highest non-zero digit ${tex`h`}. ${tex`h`}
+       (${tex`0 \le h \le n-1`}) is such that ${tex`a_h = 1`} but
+       ${tex`a_i = 0`} for all ${tex`i`} that satisfy ${tex`h < i < n`}.
+    2. Calculate the bucket offset. If ${tex`h \le p`}, ${tex`V`} maps to a
+       precise bucket, so we simply have ${tex`b = V`}; otherwise, first
+       compute ${tex`w = h - p`}, and we can compute ${tex`b`} as
+       ${tex`(w + 1) \times 2^p + (V - 2^h) \gg w`}.
+
+    #### Explanation
+
+    In the above algorithm, the highest non-zero digit ${tex`h`} tells us the
+    width of the bucket that should record the input value ${tex`V`}. For ${tex`h \le p`} the bucket width is ${tex`2^0`}; for ${tex`h = p + 1`}
+    the bucket width is ${tex`2^1`}; etc. For any positive ${tex`w`}, the
+    total number of buckets with a width *less than* ${tex`2^w`} is ${tex`(w+1) \times 2^p`}.
+
+    There are ${tex`2^p`} buckets of width ${tex`2^w`}, with a lower bound ${tex`2^h`} as the value. To find out which bucket in this group is the
+    right one for ${tex`V`}, we compute the distance between ${tex`V`} and
+    the lower bound, and divide that by the bucket width of the current
+    group. Since all bounds are powers of 2, the division is converted to a
+    bit shift.
+
+    #### Optimization
+
+    On CPUs supporting SSE4, ${tex`h`} can be most efficiently computed by
+    using the `LZCNT` instruction.
+
+    Below are a few lookup examples assuming ${tex`p = 9`}:
+
+    - ${tex`V = 1`}: ${tex`h = 0`}, ${tex`b = 1`}
+    - ${tex`V = 1023`}: ${tex`h = 9`}, ${tex`b = 1023`}
+    - ${tex`V = 1024`}: ${tex`h = 10`}, ${tex`w = 1`},
+      ${tex`b = 2 \times 512 + (1024 - 2^{10}) \gg 1 = 1024`}
+    - ${tex`V = 2048`}: ${tex`h = 11`}, ${tex`w = 2`},
+      ${tex`b = 3 \times 512 + (2048 - 2^{11}) \gg 2 = 1536`}
+    - ${tex`V = 2052`}: ${tex`h = 11`}, ${tex`w = 2`},
+      ${tex`b = 3 \times 512 + (2052 - 2^{11}) \gg 2 = 1537`}
+
+    ### Quantile Lookup
+
+    In a naïve implementation, reporting a particular quantile ${tex`q`}
+    requires traversing all the buckets once. Even if the total number of
+    values in the histogram is known, the number of buckets to traverse is
+    still linear to the total number of buckets.
+
+    There are a couple of things to consider during implementation regarding
+    bias in reporting. Because each bucket covers a range except for the
+    precise ones, a decision needs to be made about what value in that range
+    to report when we do a quantile lookup. We also need to consider how to
+    interpret results that don't fall neatly in a single bucket — for
+    example, when there are 3 values in the histogram and the quantile in
+    question is ${tex`0.5`}. For the latter, we can use the
+    [nearest-rank method](https://en.wikipedia.org/wiki/Percentile#The_nearest-rank_method)
+    to find the nearest bucket with records. Alternatively, it is also
+    possible to extrapolate an in-between value based on existing data. Each
+    method has its drawbacks. For example, linear interpolation could lead
+    to a confusing situation where the interpreted value is deemed
+    impossible given how values are measured.
+
+    #### Optimization
+
+    To reduce the number of buckets traversed during lookup, one can store
+    the total number of counts, ${tex`C`}, across all buckets, and return
+    when the buckets traversed so far yield a cumulative count greater than ${tex`q \times C`} (if traversing from the lowest bucket) or ${tex`(1 - q) \times C`} (if traversing from the highest bucket).
+    Further reduction can be achieved by using some type of "sketch" that
+    stores cumulative values across multiple buckets, which allows the
+    cursor to jump over many buckets at a time. The tradeoff is that
+    multiple values will need to be updated for each recording, and more
+    space will be used.
+
+    There are two typical scenarios where H2Histogram is deployed. The first
+    one is to check if there is any SLO violation, such as p99 latency. In
+    this case, the percentile of interest is very close to the highest end,
+    so a simple global count and backward traversal can greatly reduce the
+    number of buckets visited. The other one is to create a snapshot of
+    value distribution by reporting several pre-defined percentiles at once,
+    such as p25, p50, p75, p90, p95, p99... In this case, it is probably
+    the most efficient to create APIs that allow multiple quantiles to be
+    reported in a single sweeping trip through all the buckets.
+
+    ## Appendix
+
+    ### Counter Type
+
+    Recording counts as integers provides precise readings within the
+    counter range, which means it is important to use enough bits to cover
+    the accumulated counts during the recording period. This generally means
+    8-bit, 16-bit, 32-bit, or 64-bit unsigned integers.
+
+    Recording counts as floating point numbers increases the dynamic range
+    of individual buckets at the cost of precision. Since H2Histogram has
+    the concept of precision as a configurable option, it is possible to
+    consider the use of floating point types in conjunction with overall
+    precision.
+
+    Below is a table of the range and precision limits for different data
+    types when used to record counts:
+
+    | Type                  | Range Limit            | Relative Error   |
+    |-----------------------|------------------------|------------------|
+    | 8-bit integer         | ${tex`255`}            | — (precise)      |
+    | 16-bit integer        | ${tex`65535`}          | — (precise)      |
+    | 32-bit integer        | ${tex`2^{32} - 1`}     | — (precise)      |
+    | 64-bit integer        | ${tex`2^{64} - 1`}     | — (precise)      |
+    | 16-bit (half) float   | ${tex`65519`}          | ${tex`2^{-10}`}  |
+    | 32-bit (single) float | ${tex`\approx 2^{128}`}  | ${tex`2^{-23}`}  |
+    | 64-bit (double) float | ${tex`\approx 2^{1024}`} | ${tex`2^{-52}`}  |
+
+    From the above table, it should be obvious that if considering using
+    16-bit numbers or less, integer types are strictly superior; for 32-
+    and 64-bit numbers, the choice should be based on the potential range
+    of the highest single-bucket count.
+
+    ### Truncated Histogram
+
+    Often, the range of plausible values has both an upper and a lower
+    bound. In the current H2Histogram design, expressing an upper bound is
+    straightforward — just provide the smallest ${tex`n`} that fits the
+    value. But we haven't discussed lower bound.
+
+    In fact, having a lower bound could potentially meaningfully reduce the
+    amount of memory needed to store a histogram, because smaller values are
+    stored in finer buckets. For example, for ${tex`n = 32`} and ${tex`p = 8`}, if we know the lower bound of values is 1024, we can eliminate 768 out of 6400 buckets, a 12% reduction.
+
+    More precisely, if we know the lower bound is at least ${tex`2^l`}, we
+    can eliminate ${tex`2^l`} buckets (if ${tex`l \le p+1`}) or ${tex`(l - p + 1) \times 2^p`} buckets (if ${tex`l > p + 1`}).
+
+    How common do values have lower bounds? In high-level time measurements
+    in particular, this condition is extremely common. For example, if we
+    use a clock with nanosecond precision to track common software
+    operations, the lower bounds are significantly higher than the
+    resolution of the measurement. Many syscalls are measured in
+    microseconds, request/response time is often measured in milliseconds.
+    This means we can expect ${tex`l`} to be in the range of 10 to 20 in a
+    lot of real-life use cases.
+
+    Use the following calculator to see how much space a truncated
+    histogram can save you:
+  </script>
+
+  <script type="module">
+    const l = view(Inputs.range([0, n - 1], { value: Math.min(10, n - 1), step: 1, label: tex`l` }));
+  </script>
+
+  <script type="module">
+    const truncated_buckets = l > p + 1 ? BigInt(l - p + 1) * (1n << BigInt(p)) : (1n << BigInt(l));
+  </script>
+
+  <script type="module">
+    const reduction_pct = total_buckets === 0n ? 0 : (Number(truncated_buckets) / Number(total_buckets)) * 100;
+  </script>
+
+  <script type="text/markdown">
+    - **Number of buckets (original histogram)**: ${total_buckets.toString()}
+    - **Number of buckets (truncated histogram)**: ${(total_buckets - truncated_buckets).toString()}
+    - **Buckets saved**: ${truncated_buckets.toString()} (${reduction_pct.toFixed(1)}%)
+  </script>
+
+</notebook>
