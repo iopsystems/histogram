@@ -52,6 +52,9 @@ use serde::{Deserialize, Serialize};
 /// |    11 | .049% |  96 KiB | 352 KiB | 864 KiB |
 /// |    12 | .025% | 160 KiB | 672 KiB | 1.7 MiB |
 ///
+/// Halve all sizes for `*32` histograms (`Histogram32`, `AtomicHistogram32`,
+/// `SparseHistogram32`, `CumulativeROHistogram32`).
+///
 /// # Constraints:
 /// * `max_value_power` must be in the range `0..=64`
 /// * `max_value_power` must be greater than `grouping_power`
