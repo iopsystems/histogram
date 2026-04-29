@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-04-29
+
+### Added
+
+- `Histogram32`, `AtomicHistogram32`, `SparseHistogram32`, and
+  `CumulativeROHistogram32` — u32-counter sibling types for all four histogram
+  variants, generated from shared declarative macros
+- Sealed `Count` and `AtomicCount` traits abstracting the bucket counter width
+  (implemented for `u32`/`u64` and their atomic counterparts)
+- Cross-width widening `From` conversions (u32 → u64) for all four histogram
+  families
+- Cross-width narrowing `TryFrom` conversions (u64 → u32) for `Histogram`,
+  `SparseHistogram`, and `CumulativeROHistogram`
+- Cross-variant + narrowing `TryFrom` paths for the snapshot pipeline:
+  `Histogram` → `CumulativeROHistogram32`, `Histogram` → `SparseHistogram32`,
+  and `SparseHistogram` → `CumulativeROHistogram32`
+- u32 benchmark cases for `Histogram` and `AtomicHistogram`
+- `rezolus_memory` example comparing `Histogram`, `SparseHistogram`, and
+  `CumulativeROHistogram` memory footprints from Rezolus parquet recordings
+- README "Counter Width" and "Recommended Pipeline" sections, with matching
+  rustdoc in `lib.rs`
+
+### Changed
+
+- `CumulativeROHistogram` cache-line threshold for linear-vs-binary search is
+  now count-type-dependent (`64 / size_of::<C>()`); `total_count` and
+  `individual_count` continue to return `u64`
+
 ## [1.2.0] - 2026-04-22
 
 ### Added
