@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CumulativeROHistogramRef<'a>` / `CumulativeROHistogram32Ref<'a>` and
+  `SparseHistogramRef<'a>` / `SparseHistogram32Ref<'a>` — borrowed views over
+  histogram storage that mirror the read-only API surface of the owned types.
+  Lets columnar consumers compute quantiles directly off `&[u32]` slices
+  without per-snapshot allocation or revalidation.
+- `from_parts_unchecked` constructor on each ref type for hot-path use where
+  invariants are already known to hold; `from_parts` validates as before.
+- `as_ref()` on `CumulativeROHistogram*` and `SparseHistogram*` returning the
+  matching ref view; `From<&Owned> for OwnedRef<'_>` for trait-based conversion.
+- `SampleQuantiles` impl on each ref type.
+
 ## [1.3.0] - 2026-04-29
 
 ### Added
