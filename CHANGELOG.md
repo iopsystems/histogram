@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `from_parts_unchecked` on `CumulativeROHistogramRef` /
+  `CumulativeROHistogram32Ref` / `SparseHistogramRef` /
+  `SparseHistogram32Ref` now runs the same validation as `from_parts`
+  inside a `debug_assert!`. Debug builds catch invariant violations at
+  the call site; release builds are unchanged (validation is elided).
+
 ## [1.3.1] - 2026-04-29
 
 ### Added

@@ -466,15 +466,30 @@ macro_rules! define_sparse_histogram {
 
             /// Creates a borrowed view without validating invariants.
             ///
-            /// # Safety
+            /// Skips the O(n) validation pass that `from_parts` performs.
+            /// Intended for hot paths where the caller already guarantees the
+            /// invariants (e.g. data produced by this crate or validated once
+            /// at load time).
+            ///
+            /// # Contract
             ///
             /// Caller must ensure `index` and `count` satisfy the same invariants
-            /// as the owned `from_parts`.
+            /// as the owned `from_parts`. Misuse produces incorrect quantile
+            /// output rather than memory unsafety, which is why this is a safe
+            /// `fn`. In debug builds, the invariants are checked via
+            /// `debug_assert!`; release builds skip the check entirely.
             pub fn from_parts_unchecked(
                 config: Config,
                 index: &'a [u32],
                 count: &'a [$count],
             ) -> Self {
+                debug_assert!(
+                    Self::validate(&config, index, count).is_ok(),
+                    concat!(
+                        stringify!($ref_name),
+                        "::from_parts_unchecked called with invalid inputs"
+                    ),
+                );
                 Self {
                     config,
                     index,

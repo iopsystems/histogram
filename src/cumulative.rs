@@ -360,15 +360,30 @@ macro_rules! define_cumulative_histogram {
 
             /// Creates a borrowed view without validating invariants.
             ///
-            /// # Safety
+            /// Skips the O(n) validation pass that `from_parts` performs.
+            /// Intended for hot paths where the caller already guarantees the
+            /// invariants (e.g. data produced by this crate or validated once
+            /// at load time).
+            ///
+            /// # Contract
             ///
             /// Caller must ensure `index` and `count` satisfy the same invariants
-            /// as the owned `from_parts`.
+            /// as the owned `from_parts`. Misuse produces incorrect quantile
+            /// output rather than memory unsafety, which is why this is a safe
+            /// `fn`. In debug builds, the invariants are checked via
+            /// `debug_assert!`; release builds skip the check entirely.
             pub fn from_parts_unchecked(
                 config: Config,
                 index: &'a [u32],
                 count: &'a [$count],
             ) -> Self {
+                debug_assert!(
+                    Self::validate(&config, index, count).is_ok(),
+                    concat!(
+                        stringify!($ref_name),
+                        "::from_parts_unchecked called with invalid inputs"
+                    ),
+                );
                 Self {
                     config,
                     index,
@@ -1129,5 +1144,42 @@ mod tests {
             SampleQuantiles::quantiles(&r, qs).unwrap(),
             SampleQuantiles::quantiles(&owned, qs).unwrap()
         );
+    }
+
+    // Debug-only safety net: `from_parts_unchecked` should panic in debug
+    // builds when handed inputs that violate the invariants. Release builds
+    // skip the check entirely (no panic), so these tests only run when
+    // debug assertions are enabled.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "from_parts_unchecked called with invalid inputs")]
+    fn ref_from_parts_unchecked_debug_panics_on_length_mismatch() {
+        let config = Config::new(7, 32).unwrap();
+        let _ = CumulativeROHistogramRef::from_parts_unchecked(config, &[1, 3], &[10]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "from_parts_unchecked called with invalid inputs")]
+    fn ref_from_parts_unchecked_debug_panics_on_non_ascending_indices() {
+        let config = Config::new(7, 32).unwrap();
+        let _ = CumulativeROHistogramRef::from_parts_unchecked(config, &[3, 1], &[10u64, 40]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "from_parts_unchecked called with invalid inputs")]
+    fn ref_from_parts_unchecked_debug_panics_on_decreasing_counts() {
+        let config = Config::new(7, 32).unwrap();
+        let _ = CumulativeROHistogramRef::from_parts_unchecked(config, &[1, 3], &[40u64, 10]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "from_parts_unchecked called with invalid inputs")]
+    fn ref32_from_parts_unchecked_debug_panics_on_zero_count() {
+        let config = Config::new(7, 32).unwrap();
+        let _ = CumulativeROHistogram32Ref::from_parts_unchecked(config, &[1], &[0u32]);
     }
 }
