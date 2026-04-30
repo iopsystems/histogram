@@ -4,7 +4,7 @@ use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
 use crate::{Bucket, Config, Count, Error, Histogram, Histogram32};
 
 macro_rules! define_sparse_histogram {
-    ($name:ident, $iter:ident, $hist:ident, $count:ty) => {
+    ($name:ident, $ref_name:ident, $iter:ident, $hist:ident, $count:ty) => {
         /// A sparse, columnar representation of a histogram.
         ///
         /// Significantly smaller than the dense form when many buckets are
@@ -47,30 +47,7 @@ macro_rules! define_sparse_histogram {
                 index: Vec<u32>,
                 count: Vec<$count>,
             ) -> Result<Self, Error> {
-                if index.len() != count.len() {
-                    return Err(Error::IncompatibleParameters);
-                }
-
-                let total_buckets = config.total_buckets();
-                let mut prev = None;
-                for &idx in &index {
-                    if idx as usize >= total_buckets {
-                        return Err(Error::OutOfRange);
-                    }
-                    if let Some(p) = prev {
-                        if idx <= p {
-                            return Err(Error::IncompatibleParameters);
-                        }
-                    }
-                    prev = Some(idx);
-                }
-
-                for &c in &count {
-                    if c == <$count as Count>::ZERO {
-                        return Err(Error::IncompatibleParameters);
-                    }
-                }
-
+                $ref_name::validate(&config, &index, &count)?;
                 Ok(Self {
                     config,
                     index,
@@ -96,6 +73,16 @@ macro_rules! define_sparse_histogram {
             /// Returns a slice of the bucket counts.
             pub fn count(&self) -> &[$count] {
                 &self.count
+            }
+
+            /// Returns the number of non-zero buckets.
+            pub fn len(&self) -> usize {
+                self.index.len()
+            }
+
+            /// Returns `true` if the histogram contains no observations.
+            pub fn is_empty(&self) -> bool {
+                self.index.is_empty()
             }
 
             /// Helper function to store a bucket in the histogram.
@@ -323,9 +310,210 @@ macro_rules! define_sparse_histogram {
 
             /// Returns an iterator across the non-zero histogram buckets.
             pub fn iter(&self) -> $iter<'_> {
+                self.as_ref().iter()
+            }
+
+            /// Compute quantiles for the given values.
+            pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantiles(self, quantiles)
+            }
+
+            /// Compute a single quantile.
+            pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+
+            /// Returns a borrowed view over this histogram's storage.
+            pub fn as_ref(&self) -> $ref_name<'_> {
+                $ref_name::from_parts_unchecked(self.config, &self.index, &self.count)
+            }
+        }
+
+        impl SampleQuantiles for $name {
+            fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                self.as_ref().quantiles(quantiles)
+            }
+        }
+
+        impl<'a> IntoIterator for &'a $name {
+            type Item = Bucket;
+            type IntoIter = $iter<'a>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
+            }
+        }
+
+        /// An iterator across the histogram buckets.
+        pub struct $iter<'a> {
+            index: usize,
+            config: Config,
+            sparse_index: &'a [u32],
+            count: &'a [$count],
+        }
+
+        impl Iterator for $iter<'_> {
+            type Item = Bucket;
+
+            fn next(&mut self) -> Option<<Self as std::iter::Iterator>::Item> {
+                if self.index >= self.sparse_index.len() {
+                    return None;
+                }
+
+                let bucket = Bucket {
+                    count: self.count[self.index].as_u128() as u64,
+                    range: self
+                        .config
+                        .index_to_range(self.sparse_index[self.index] as usize),
+                };
+
+                self.index += 1;
+
+                Some(bucket)
+            }
+        }
+
+        impl ExactSizeIterator for $iter<'_> {
+            fn len(&self) -> usize {
+                self.sparse_index.len() - self.index
+            }
+        }
+
+        impl std::iter::FusedIterator for $iter<'_> {}
+
+        impl From<&$hist> for $name {
+            fn from(histogram: &$hist) -> Self {
+                let mut index = Vec::new();
+                let mut count = Vec::new();
+
+                for (idx, n) in histogram.as_slice().iter().enumerate() {
+                    if *n != <$count as Count>::ZERO {
+                        index.push(idx as u32);
+                        count.push(*n);
+                    }
+                }
+
+                Self {
+                    config: histogram.config(),
+                    index,
+                    count,
+                }
+            }
+        }
+
+        // ── Borrowed view ─────────────────────────────────────────────────────
+
+        /// A borrowed view over sparse histogram storage.
+        ///
+        /// Holds references to `index` and `count` slices together with the
+        /// [`Config`], mirroring the read-only API surface of the owned histogram
+        /// type.
+        ///
+        /// The type is [`Copy`] — passing it around is cheap. Use
+        /// `as_ref()` on the owned type or the `From<&Owned>` impl to obtain one.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct $ref_name<'a> {
+            config: Config,
+            index: &'a [u32],
+            count: &'a [$count],
+        }
+
+        impl<'a> $ref_name<'a> {
+            /// Validates the slice invariants (same semantics as the owned `from_parts`).
+            fn validate(config: &Config, index: &[u32], count: &[$count]) -> Result<(), Error> {
+                if index.len() != count.len() {
+                    return Err(Error::IncompatibleParameters);
+                }
+
+                let total_buckets = config.total_buckets();
+                let mut prev = None;
+                for &idx in index {
+                    if idx as usize >= total_buckets {
+                        return Err(Error::OutOfRange);
+                    }
+                    if let Some(p) = prev {
+                        if idx <= p {
+                            return Err(Error::IncompatibleParameters);
+                        }
+                    }
+                    prev = Some(idx);
+                }
+
+                for &c in count {
+                    if c == <$count as Count>::ZERO {
+                        return Err(Error::IncompatibleParameters);
+                    }
+                }
+
+                Ok(())
+            }
+
+            /// Creates a borrowed view, validating all invariants.
+            ///
+            /// Returns the same errors as the owned `from_parts`.
+            pub fn from_parts(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+            ) -> Result<Self, Error> {
+                Self::validate(&config, index, count)?;
+                Ok(Self {
+                    config,
+                    index,
+                    count,
+                })
+            }
+
+            /// Creates a borrowed view without validating invariants.
+            ///
+            /// # Safety
+            ///
+            /// Caller must ensure `index` and `count` satisfy the same invariants
+            /// as the owned `from_parts`.
+            pub fn from_parts_unchecked(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+            ) -> Self {
+                Self {
+                    config,
+                    index,
+                    count,
+                }
+            }
+
+            /// Returns the bucket configuration.
+            pub fn config(&self) -> Config {
+                self.config
+            }
+
+            /// Returns a slice of the non-zero bucket indices.
+            pub fn index(&self) -> &'a [u32] {
+                self.index
+            }
+
+            /// Returns a slice of the bucket counts.
+            pub fn count(&self) -> &'a [$count] {
+                self.count
+            }
+
+            /// Returns the number of non-zero buckets.
+            pub fn len(&self) -> usize {
+                self.index.len()
+            }
+
+            /// Returns `true` if the histogram contains no observations.
+            pub fn is_empty(&self) -> bool {
+                self.index.is_empty()
+            }
+
+            /// Returns an iterator across the non-zero histogram buckets.
+            pub fn iter(&self) -> $iter<'a> {
                 $iter {
                     index: 0,
-                    histogram: self,
+                    config: self.config,
+                    sparse_index: self.index,
+                    count: self.count,
                 }
             }
 
@@ -340,7 +528,7 @@ macro_rules! define_sparse_histogram {
             }
         }
 
-        impl SampleQuantiles for $name {
+        impl SampleQuantiles for $ref_name<'_> {
             fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
                 // validate all the quantiles
                 for q in quantiles {
@@ -411,78 +599,46 @@ macro_rules! define_sparse_histogram {
             }
         }
 
-        impl<'a> IntoIterator for &'a $name {
+        impl<'a> From<&'a $name> for $ref_name<'a> {
+            fn from(h: &'a $name) -> Self {
+                Self::from_parts_unchecked(h.config(), h.index(), h.count())
+            }
+        }
+
+        impl<'a> IntoIterator for $ref_name<'a> {
             type Item = Bucket;
             type IntoIter = $iter<'a>;
 
             fn into_iter(self) -> Self::IntoIter {
-                $iter {
-                    index: 0,
-                    histogram: self,
-                }
+                self.iter()
             }
         }
 
-        /// An iterator across the histogram buckets.
-        pub struct $iter<'a> {
-            index: usize,
-            histogram: &'a $name,
-        }
-
-        impl Iterator for $iter<'_> {
+        impl<'a, 'b> IntoIterator for &'a $ref_name<'b> {
             type Item = Bucket;
+            type IntoIter = $iter<'b>;
 
-            fn next(&mut self) -> Option<<Self as std::iter::Iterator>::Item> {
-                if self.index >= self.histogram.index.len() {
-                    return None;
-                }
-
-                let bucket = Bucket {
-                    count: self.histogram.count[self.index].as_u128() as u64,
-                    range: self
-                        .histogram
-                        .config
-                        .index_to_range(self.histogram.index[self.index] as usize),
-                };
-
-                self.index += 1;
-
-                Some(bucket)
-            }
-        }
-
-        impl ExactSizeIterator for $iter<'_> {
-            fn len(&self) -> usize {
-                self.histogram.index.len() - self.index
-            }
-        }
-
-        impl std::iter::FusedIterator for $iter<'_> {}
-
-        impl From<&$hist> for $name {
-            fn from(histogram: &$hist) -> Self {
-                let mut index = Vec::new();
-                let mut count = Vec::new();
-
-                for (idx, n) in histogram.as_slice().iter().enumerate() {
-                    if *n != <$count as Count>::ZERO {
-                        index.push(idx as u32);
-                        count.push(*n);
-                    }
-                }
-
-                Self {
-                    config: histogram.config(),
-                    index,
-                    count,
-                }
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
             }
         }
     };
 }
 
-define_sparse_histogram!(SparseHistogram, SparseIter, Histogram, u64);
-define_sparse_histogram!(SparseHistogram32, SparseIter32, Histogram32, u32);
+define_sparse_histogram!(
+    SparseHistogram,
+    SparseHistogramRef,
+    SparseIter,
+    Histogram,
+    u64
+);
+define_sparse_histogram!(
+    SparseHistogram32,
+    SparseHistogram32Ref,
+    SparseIter32,
+    Histogram32,
+    u32
+);
 
 // Deprecated forwarding methods — only on the u64 variant to avoid proliferating
 // deprecated APIs onto the new u32 type.
@@ -773,5 +929,201 @@ mod tests {
         h.increment(100).unwrap();
         let s = SparseHistogram32::from(&h);
         assert_eq!(s.count().len(), 3);
+    }
+
+    // ── Ref type tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn ref_validation_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+
+        // Mismatched lengths
+        assert_eq!(
+            SparseHistogramRef::from_parts(config, &[1u32, 2], &[1u64]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Out of range index
+        assert_eq!(
+            SparseHistogramRef::from_parts(config, &[u32::MAX], &[1u64]),
+            Err(Error::OutOfRange)
+        );
+
+        // Non-ascending indices
+        assert_eq!(
+            SparseHistogramRef::from_parts(config, &[3u32, 1], &[1u64, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Duplicate indices
+        assert_eq!(
+            SparseHistogramRef::from_parts(config, &[1u32, 1], &[1u64, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Zero count
+        assert_eq!(
+            SparseHistogramRef::from_parts(config, &[1u32], &[0u64]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Valid
+        assert!(SparseHistogramRef::from_parts(config, &[1u32, 3, 5], &[6u64, 12, 7]).is_ok());
+
+        // Empty
+        assert!(SparseHistogramRef::from_parts(config, &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn ref_validation_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+
+        assert_eq!(
+            SparseHistogram32Ref::from_parts(config, &[1u32, 2], &[1u32]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert_eq!(
+            SparseHistogram32Ref::from_parts(config, &[u32::MAX], &[1u32]),
+            Err(Error::OutOfRange)
+        );
+        assert_eq!(
+            SparseHistogram32Ref::from_parts(config, &[3u32, 1], &[1u32, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert_eq!(
+            SparseHistogram32Ref::from_parts(config, &[1u32], &[0u32]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert!(SparseHistogram32Ref::from_parts(config, &[1u32, 3, 5], &[6u32, 12, 7]).is_ok());
+    }
+
+    #[test]
+    fn ref_quantile_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from_parts(config, owned.index(), owned.count()).unwrap();
+
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_quantile_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            SparseHistogram32::from_parts(config, vec![1, 3, 5], vec![6u32, 12, 7]).unwrap();
+        let r = SparseHistogram32Ref::from_parts(config, owned.index(), owned.count()).unwrap();
+
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_from_parts_unchecked_matches_owned() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from_parts_unchecked(config, owned.index(), owned.count());
+
+        let qs = &[0.25, 0.5, 0.75];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_from_owned_round_trip() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from(&owned);
+
+        let qs = &[0.0, 0.5, 1.0];
+        assert_eq!(r.quantiles(qs).unwrap(), owned.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_iter_agrees_with_owned() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from(&owned);
+
+        let owned_buckets: Vec<_> = owned.iter().collect();
+        let ref_buckets: Vec<_> = r.iter().collect();
+        assert_eq!(owned_buckets, ref_buckets);
+    }
+
+    #[test]
+    fn ref_empty_edge_case() {
+        let config = Config::new(7, 32).unwrap();
+        let r = SparseHistogramRef::from_parts(config, &[], &[]).unwrap();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+        assert_eq!(r.quantiles(&[0.5]).unwrap(), None);
+    }
+
+    #[test]
+    fn ref_single_sample_edge_case() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![5], vec![1u64]).unwrap();
+        let r = SparseHistogramRef::from(&owned);
+
+        assert_eq!(r.len(), 1);
+        let result = r.quantile(0.5).unwrap().unwrap();
+        let q = Quantile::new(0.5).unwrap();
+        assert!(result.get(&q).is_some());
+    }
+
+    #[test]
+    fn ref_into_iterator() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from(&owned);
+
+        // IntoIterator for owned ref (consumes)
+        let buckets_consumed: Vec<_> = r.into_iter().collect();
+        // IntoIterator for &ref (borrows)
+        let buckets_borrowed: Vec<_> = (&r).into_iter().collect();
+        let owned_buckets: Vec<_> = owned.iter().collect();
+
+        assert_eq!(buckets_consumed, owned_buckets);
+        assert_eq!(buckets_borrowed, owned_buckets);
+    }
+
+    #[test]
+    fn ref_u32_symmetry() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            SparseHistogram32::from_parts(config, vec![1, 3, 5], vec![6u32, 12, 7]).unwrap();
+        let r = SparseHistogram32Ref::from(&owned);
+
+        // Iter parity
+        let owned_buckets: Vec<_> = owned.iter().collect();
+        let ref_buckets: Vec<_> = r.iter().collect();
+        assert_eq!(owned_buckets, ref_buckets);
+
+        // Quantile parity
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_as_ref_method() {
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = owned.as_ref();
+
+        let qs = &[0.5, 0.99];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_sample_quantiles_trait() {
+        use crate::quantile::SampleQuantiles;
+        let config = Config::new(7, 32).unwrap();
+        let owned = SparseHistogram::from_parts(config, vec![1, 3, 5], vec![6u64, 12, 7]).unwrap();
+        let r = SparseHistogramRef::from(&owned);
+
+        let qs = &[0.25, 0.75];
+        assert_eq!(
+            SampleQuantiles::quantiles(&r, qs).unwrap(),
+            SampleQuantiles::quantiles(&owned, qs).unwrap()
+        );
     }
 }

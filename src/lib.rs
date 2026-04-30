@@ -98,8 +98,11 @@ pub use atomic::{AtomicHistogram, AtomicHistogram32};
 pub use bucket::Bucket;
 pub use config::Config;
 pub use count::{AtomicCount, Count};
-pub use cumulative::{CumulativeROHistogram, CumulativeROHistogram32};
+pub use cumulative::{
+    CumulativeROHistogram, CumulativeROHistogram32, CumulativeROHistogram32Ref,
+    CumulativeROHistogramRef,
+};
 pub use errors::Error;
 pub use quantile::{Quantile, QuantilesResult, SampleQuantiles};
-pub use sparse::{SparseHistogram, SparseHistogram32};
+pub use sparse::{SparseHistogram, SparseHistogram32, SparseHistogram32Ref, SparseHistogramRef};
 pub use standard::{Histogram, Histogram32};
