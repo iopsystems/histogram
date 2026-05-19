@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-19
+
+### Added
+
+- Midpoint-based `mean()` on `CumulativeROHistogram` / `CumulativeROHistogram32`
+  — the mean of all observations, estimated from bucket midpoints, computed
+  once at construction time across `from_parts`, `From<&Histogram>`, and
+  `From<&SparseHistogram>`. Returns `None` for an empty histogram.
+
+### Changed
+
+- `CumulativeROHistogram` / `CumulativeROHistogram32` no longer implement `Eq`
+  (they now store an `f64` mean); `PartialEq` is retained. The borrowed
+  `*Ref` view types are unaffected.
+
 ## [1.3.1] - 2026-04-29
 
 ### Added
