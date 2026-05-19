@@ -10,11 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Midpoint-based `mean()` on the borrowed `CumulativeROHistogramRef` /
-  `CumulativeROHistogram32Ref` views. Unlike the owned type, the borrowed
-  view does not cache the mean; it is computed from the borrowed slices on
-  each call without allocating, so a zero-alloc streaming reducer holding a
-  borrowed `Ref` can fold it in directly. Returns `None` for an empty
+  `CumulativeROHistogram32Ref` views. The mean is stored on the view
+  (computed once at construction, or carried over from the owned
+  histogram's cached value), so `mean()` is a cheap field access exposed
+  just like `count()` — no per-call streaming computation — letting a
+  zero-alloc reducer fold it in directly. Returns `None` for an empty
   histogram.
+
+### Changed
+
+- `CumulativeROHistogramRef` / `CumulativeROHistogram32Ref` no longer
+  implement `Eq` (they now carry an `f64` mean); `PartialEq` is retained.
 
 ## [1.4.0] - 2026-05-19
 

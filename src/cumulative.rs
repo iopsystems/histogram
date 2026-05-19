@@ -152,7 +152,7 @@ macro_rules! define_cumulative_histogram {
 
             /// Returns a borrowed view over this histogram's storage.
             pub fn as_ref(&self) -> $ref_name<'_> {
-                $ref_name::from_parts_unchecked(self.config, &self.index, &self.count)
+                $ref_name::from_parts_with_mean(self.config, &self.index, &self.count, self.mean)
             }
         }
 
@@ -317,11 +317,15 @@ macro_rules! define_cumulative_histogram {
         ///
         /// The type is [`Copy`] — passing it around is cheap. Use
         /// `as_ref()` on the owned type or the `From<&Owned>` impl to obtain one.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        // `mean` is an `f64`, so `Eq` cannot be derived for this type.
+        #[derive(Clone, Copy, Debug, PartialEq)]
         pub struct $ref_name<'a> {
             config: Config,
             index: &'a [u32],
             count: &'a [$count],
+            /// Mean of all observations, estimated using bucket midpoints.
+            /// `None` when the histogram is empty.
+            mean: Option<f64>,
         }
 
         impl<'a> $ref_name<'a> {
@@ -370,10 +374,12 @@ macro_rules! define_cumulative_histogram {
                 count: &'a [$count],
             ) -> Result<Self, Error> {
                 Self::validate(&config, index, count)?;
+                let mean = Self::compute_mean(&config, index, count);
                 Ok(Self {
                     config,
                     index,
                     count,
+                    mean,
                 })
             }
 
@@ -388,10 +394,29 @@ macro_rules! define_cumulative_histogram {
                 index: &'a [u32],
                 count: &'a [$count],
             ) -> Self {
+                let mean = Self::compute_mean(&config, index, count);
                 Self {
                     config,
                     index,
                     count,
+                    mean,
+                }
+            }
+
+            /// Creates a borrowed view with a precomputed mean, skipping both
+            /// validation and the mean computation. Used by the owned type's
+            /// `as_ref()` / `From` impls, which already cache the mean.
+            fn from_parts_with_mean(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+                mean: Option<f64>,
+            ) -> Self {
+                Self {
+                    config,
+                    index,
+                    count,
+                    mean,
                 }
             }
 
@@ -480,12 +505,14 @@ macro_rules! define_cumulative_histogram {
             /// Returns the mean of all observations, estimated using bucket
             /// midpoints, or `None` if the histogram is empty.
             ///
-            /// Unlike the owned histogram, the borrowed view does not cache
-            /// the mean; it is computed from the borrowed slices on each call
-            /// without allocating, so a zero-alloc streaming reducer holding a
-            /// borrowed `Ref` can fold it in directly.
+            /// The mean is stored on the view (computed once at construction,
+            /// or carried over from the owned histogram's cached value), so
+            /// this is a cheap field access — exposed just like [`count`] —
+            /// and a zero-alloc streaming reducer can fold it in directly.
+            ///
+            /// [`count`]: Self::count
             pub fn mean(&self) -> Option<f64> {
-                Self::compute_mean(&self.config, self.index, self.count)
+                self.mean
             }
 
             /// Computes the mean of all observations using bucket midpoints.
@@ -598,7 +625,7 @@ macro_rules! define_cumulative_histogram {
 
         impl<'a> From<&'a $name> for $ref_name<'a> {
             fn from(h: &'a $name) -> Self {
-                Self::from_parts_unchecked(h.config(), h.index(), h.count())
+                Self::from_parts_with_mean(h.config(), h.index(), h.count(), h.mean())
             }
         }
 
