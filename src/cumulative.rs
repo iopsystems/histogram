@@ -481,11 +481,7 @@ macro_rules! define_cumulative_histogram {
             ///
             /// `count` holds cumulative counts. Returns `None` when there are
             /// no observations.
-            fn compute_mean(
-                config: &Config,
-                index: &[u32],
-                count: &[$count],
-            ) -> Option<f64> {
+            fn compute_mean(config: &Config, index: &[u32], count: &[$count]) -> Option<f64> {
                 let total = count.last()?.as_u128();
                 if total == 0 {
                     return None;
