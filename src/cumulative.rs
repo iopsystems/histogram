@@ -152,7 +152,7 @@ macro_rules! define_cumulative_histogram {
 
             /// Returns a borrowed view over this histogram's storage.
             pub fn as_ref(&self) -> $ref_name<'_> {
-                $ref_name::from_parts_unchecked(self.config, &self.index, &self.count)
+                $ref_name::from_parts_with_mean(self.config, &self.index, &self.count, self.mean)
             }
         }
 
@@ -317,11 +317,14 @@ macro_rules! define_cumulative_histogram {
         ///
         /// The type is [`Copy`] — passing it around is cheap. Use
         /// `as_ref()` on the owned type or the `From<&Owned>` impl to obtain one.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        // `mean` is an `f64`, so `Eq` cannot be derived for this type.
+        #[derive(Clone, Copy, Debug, PartialEq)]
         pub struct $ref_name<'a> {
             config: Config,
             index: &'a [u32],
             count: &'a [$count],
+            /// Midpoint-estimated mean; `None` when empty.
+            mean: Option<f64>,
         }
 
         impl<'a> $ref_name<'a> {
@@ -370,10 +373,12 @@ macro_rules! define_cumulative_histogram {
                 count: &'a [$count],
             ) -> Result<Self, Error> {
                 Self::validate(&config, index, count)?;
+                let mean = Self::compute_mean(&config, index, count);
                 Ok(Self {
                     config,
                     index,
                     count,
+                    mean,
                 })
             }
 
@@ -388,10 +393,28 @@ macro_rules! define_cumulative_histogram {
                 index: &'a [u32],
                 count: &'a [$count],
             ) -> Self {
+                let mean = Self::compute_mean(&config, index, count);
                 Self {
                     config,
                     index,
                     count,
+                    mean,
+                }
+            }
+
+            /// Borrowed view with a precomputed mean; used by the owned
+            /// type's `as_ref()` / `From` impls, which already cache it.
+            fn from_parts_with_mean(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+                mean: Option<f64>,
+            ) -> Self {
+                Self {
+                    config,
+                    index,
+                    count,
+                    mean,
                 }
             }
 
@@ -475,6 +498,14 @@ macro_rules! define_cumulative_histogram {
             /// Compute a single quantile.
             pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
                 <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+
+            /// Returns the midpoint-estimated mean, or `None` if empty.
+            ///
+            /// Stored on the view, so this is a cheap field access like
+            /// [`count`](Self::count) — no per-call computation.
+            pub fn mean(&self) -> Option<f64> {
+                self.mean
             }
 
             /// Computes the mean of all observations using bucket midpoints.
@@ -587,7 +618,7 @@ macro_rules! define_cumulative_histogram {
 
         impl<'a> From<&'a $name> for $ref_name<'a> {
             fn from(h: &'a $name) -> Self {
-                Self::from_parts_unchecked(h.config(), h.index(), h.count())
+                Self::from_parts_with_mean(h.config(), h.index(), h.count(), h.mean())
             }
         }
 
@@ -1218,6 +1249,32 @@ mod tests {
 
         let qs = &[0.5, 0.99];
         assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_mean_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![0, 1, 2], vec![2u64, 5, 10]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+        assert!((r.mean().unwrap() - 1.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ref_mean_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram32::from_parts(config, vec![0, 1, 2], vec![2u32, 5, 10]).unwrap();
+        let r = CumulativeROHistogram32Ref::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+    }
+
+    #[test]
+    fn ref_mean_empty_is_none() {
+        let config = Config::new(7, 32).unwrap();
+        let r = CumulativeROHistogramRef::from_parts(config, &[], &[]).unwrap();
+        assert_eq!(r.mean(), None);
     }
 
     #[test]
