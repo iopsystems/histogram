@@ -477,6 +477,17 @@ macro_rules! define_cumulative_histogram {
                 <Self as SampleQuantiles>::quantile(self, quantile)
             }
 
+            /// Returns the mean of all observations, estimated using bucket
+            /// midpoints, or `None` if the histogram is empty.
+            ///
+            /// Unlike the owned histogram, the borrowed view does not cache
+            /// the mean; it is computed from the borrowed slices on each call
+            /// without allocating, so a zero-alloc streaming reducer holding a
+            /// borrowed `Ref` can fold it in directly.
+            pub fn mean(&self) -> Option<f64> {
+                Self::compute_mean(&self.config, self.index, self.count)
+            }
+
             /// Computes the mean of all observations using bucket midpoints.
             ///
             /// `count` holds cumulative counts. Returns `None` when there are
@@ -1218,6 +1229,32 @@ mod tests {
 
         let qs = &[0.5, 0.99];
         assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_mean_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![0, 1, 2], vec![2u64, 5, 10]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+        assert!((r.mean().unwrap() - 1.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ref_mean_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram32::from_parts(config, vec![0, 1, 2], vec![2u32, 5, 10]).unwrap();
+        let r = CumulativeROHistogram32Ref::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+    }
+
+    #[test]
+    fn ref_mean_empty_is_none() {
+        let config = Config::new(7, 32).unwrap();
+        let r = CumulativeROHistogramRef::from_parts(config, &[], &[]).unwrap();
+        assert_eq!(r.mean(), None);
     }
 
     #[test]
