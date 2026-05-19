@@ -24,13 +24,17 @@ macro_rules! define_cumulative_histogram {
         /// cumulative counts, which can be performed with binary search.
         /// Additional methods to provide the percentile range each or all bucket(s)
         /// represent are implmented to facilitate analytics based on such histograms.
-        #[derive(Clone, Debug, PartialEq, Eq)]
+        // `mean` is an `f64`, so `Eq` cannot be derived for this type.
+        #[derive(Clone, Debug, PartialEq)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         pub struct $name {
             config: Config,
             index: Vec<u32>,
             count: Vec<$count>,
+            /// Mean of all observations, estimated using bucket midpoints.
+            /// `None` when the histogram is empty. Computed at construction.
+            mean: Option<f64>,
         }
 
         impl $name {
@@ -51,10 +55,12 @@ macro_rules! define_cumulative_histogram {
                 count: Vec<$count>,
             ) -> Result<Self, Error> {
                 $ref_name::validate(&config, &index, &count)?;
+                let mean = $ref_name::compute_mean(&config, &index, &count);
                 Ok(Self {
                     config,
                     index,
                     count,
+                    mean,
                 })
             }
 
@@ -82,6 +88,14 @@ macro_rules! define_cumulative_histogram {
             /// Returns the total number of observations across all buckets.
             pub fn total_count(&self) -> u64 {
                 self.as_ref().total_count()
+            }
+
+            /// Returns the mean of all observations, estimated using bucket
+            /// midpoints, or `None` if the histogram is empty.
+            ///
+            /// This value is computed once at construction time.
+            pub fn mean(&self) -> Option<f64> {
+                self.mean
             }
 
             /// Returns the number of non-zero buckets.
@@ -260,10 +274,12 @@ macro_rules! define_cumulative_histogram {
                     }
                 }
 
+                let mean = $ref_name::compute_mean(&histogram.config(), &index, &count);
                 Self {
                     config: histogram.config(),
                     index,
                     count,
+                    mean,
                 }
             }
         }
@@ -280,10 +296,13 @@ macro_rules! define_cumulative_histogram {
                     })
                     .collect();
 
+                let index = histogram.index().to_vec();
+                let mean = $ref_name::compute_mean(&histogram.config(), &index, &cumulative);
                 Self {
                     config: histogram.config(),
-                    index: histogram.index().to_vec(),
+                    index,
                     count: cumulative,
+                    mean,
                 }
             }
         }
@@ -456,6 +475,27 @@ macro_rules! define_cumulative_histogram {
             /// Compute a single quantile.
             pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
                 <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+
+            /// Computes the mean of all observations using bucket midpoints.
+            ///
+            /// `count` holds cumulative counts. Returns `None` when there are
+            /// no observations.
+            fn compute_mean(config: &Config, index: &[u32], count: &[$count]) -> Option<f64> {
+                let total = count.last()?.as_u128();
+                if total == 0 {
+                    return None;
+                }
+
+                let mut weighted_sum = 0.0_f64;
+                for i in 0..index.len() {
+                    let individual = Self::individual_count(count, i) as f64;
+                    let range = config.index_to_range(index[i] as usize);
+                    let midpoint = (*range.start() as f64 + *range.end() as f64) / 2.0;
+                    weighted_sum += midpoint * individual;
+                }
+
+                Some(weighted_sum / total as f64)
             }
 
             /// Returns the individual (non-cumulative) count at the given position.
@@ -657,6 +697,70 @@ mod tests {
             assert_eq!(sq.1.range(), cq.1.range());
             assert_eq!(hq.1.count(), cq.1.count());
         }
+    }
+
+    #[test]
+    fn mean_from_parts() {
+        let config = Config::new(7, 32).unwrap();
+        // Buckets 0, 1, 2 map to single-value ranges 0, 1, 2.
+        // Individual counts: [2, 3, 5] (cumulative [2, 5, 10]).
+        // Mean = (0*2 + 1*3 + 2*5) / 10 = 13 / 10 = 1.3
+        let croh =
+            CumulativeROHistogram::from_parts(config, vec![0, 1, 2], vec![2, 5, 10]).unwrap();
+        let mean = croh.mean().unwrap();
+        assert!((mean - 1.3).abs() < 1e-9, "mean was {mean}");
+    }
+
+    #[test]
+    fn mean_uses_bucket_midpoint() {
+        let config = Config::new(7, 32).unwrap();
+        // index 384 -> range 512..=515, midpoint 513.5
+        let range = config.index_to_range(384);
+        let expected = (*range.start() as f64 + *range.end() as f64) / 2.0;
+        let croh = CumulativeROHistogram::from_parts(config, vec![384], vec![4]).unwrap();
+        assert!((croh.mean().unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_empty_is_none() {
+        let config = Config::new(7, 32).unwrap();
+        let croh = CumulativeROHistogram::from_parts(config, vec![], vec![]).unwrap();
+        assert_eq!(croh.mean(), None);
+
+        let h = Histogram::new(7, 64).unwrap();
+        assert_eq!(CumulativeROHistogram::from(&h).mean(), None);
+    }
+
+    #[test]
+    fn mean_matches_across_constructors() {
+        let mut h = Histogram::new(7, 64).unwrap();
+        for v in [1, 1, 5, 5, 5, 100, 250, 999] {
+            h.increment(v).unwrap();
+        }
+        let from_hist = CumulativeROHistogram::from(&h);
+        let from_sparse = CumulativeROHistogram::from(&SparseHistogram::from(&h));
+
+        let a = from_hist.mean().unwrap();
+        let b = from_sparse.mean().unwrap();
+        assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+
+        // Independently compute expected mean via the iterator over buckets.
+        let mut weighted = 0.0_f64;
+        let mut total = 0.0_f64;
+        for bucket in from_hist.iter() {
+            let mid = (bucket.start() as f64 + bucket.end() as f64) / 2.0;
+            weighted += mid * bucket.count() as f64;
+            total += bucket.count() as f64;
+        }
+        assert!((a - weighted / total).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let croh =
+            CumulativeROHistogram32::from_parts(config, vec![0, 1, 2], vec![2u32, 5, 10]).unwrap();
+        assert!((croh.mean().unwrap() - 1.3).abs() < 1e-9);
     }
 
     #[test]
