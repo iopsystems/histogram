@@ -323,8 +323,7 @@ macro_rules! define_cumulative_histogram {
             config: Config,
             index: &'a [u32],
             count: &'a [$count],
-            /// Mean of all observations, estimated using bucket midpoints.
-            /// `None` when the histogram is empty.
+            /// Midpoint-estimated mean; `None` when empty.
             mean: Option<f64>,
         }
 
@@ -403,9 +402,8 @@ macro_rules! define_cumulative_histogram {
                 }
             }
 
-            /// Creates a borrowed view with a precomputed mean, skipping both
-            /// validation and the mean computation. Used by the owned type's
-            /// `as_ref()` / `From` impls, which already cache the mean.
+            /// Borrowed view with a precomputed mean; used by the owned
+            /// type's `as_ref()` / `From` impls, which already cache it.
             fn from_parts_with_mean(
                 config: Config,
                 index: &'a [u32],
@@ -502,15 +500,10 @@ macro_rules! define_cumulative_histogram {
                 <Self as SampleQuantiles>::quantile(self, quantile)
             }
 
-            /// Returns the mean of all observations, estimated using bucket
-            /// midpoints, or `None` if the histogram is empty.
+            /// Returns the midpoint-estimated mean, or `None` if empty.
             ///
-            /// The mean is stored on the view (computed once at construction,
-            /// or carried over from the owned histogram's cached value), so
-            /// this is a cheap field access — exposed just like [`count`] —
-            /// and a zero-alloc streaming reducer can fold it in directly.
-            ///
-            /// [`count`]: Self::count
+            /// Stored on the view, so this is a cheap field access like
+            /// [`count`](Self::count) — no per-call computation.
             pub fn mean(&self) -> Option<f64> {
                 self.mean
             }
