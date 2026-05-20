@@ -1,6 +1,6 @@
 [package]
 name = "histogram"
-version = "1.5.0-alpha.1"
+version = "1.4.1"
 edition = "2024"
 authors = ["Brian Martin <brian@iop.systems>", "Yao Yue <yao@iop.systems>"]
 license = "MIT OR Apache-2.0"
