@@ -1,8 +1,8 @@
 [package]
 name = "histogram"
-version = "1.1.1-alpha.0"
+version = "1.4.2-alpha.0"
 edition = "2024"
-authors = ["Brian Martin <brian@iop.systems>"]
+authors = ["Brian Martin <brian@iop.systems>", "Yao Yue <yao@iop.systems>"]
 license = "MIT OR Apache-2.0"
 description = "A collection of histogram data structures"
 homepage = "https://github.com/iopsystems/histogram"

@@ -1,398 +1,665 @@
 use std::collections::BTreeMap;
 
 use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
-use crate::{Bucket, Config, Error, Histogram, SparseHistogram};
+use crate::{
+    Bucket, Config, Count, Error, Histogram, Histogram32, SparseHistogram, SparseHistogram32,
+};
 
-/// A read-only, cumulative histogram for fast quantile queries.
-///
-/// This is a variant of the [`SparseHistogram`] with cumulative counts
-/// (starting from the first bucket) for each bucket that is present.
-///
-/// Stores only non-zero buckets in columnar form, like [`SparseHistogram`],
-/// but with **cumulative** counts: `count[i]` equals the total number of
-/// observations in buckets `0..=i` (i.e., a running prefix sum). The last
-/// element of `count` equals the total observation count.
-///
-/// `CumulativeROHistogram` is intended to be read-only—i.e. it shouldn't
-/// accept updates for new observations, because such operations would be
-/// expensive given counts are cumulative. On the other hand, querying
-/// percentiles is cheaper than standard or sparse histograms without
-/// cumulative counts, which can be performed with binary search.
-/// Additional methods to provide the percentile range each or all bucket(s)
-/// represent are implmented to facilitate analytics based on such histograms.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub struct CumulativeROHistogram {
-    config: Config,
-    index: Vec<u32>,
-    count: Vec<u64>,
-}
-
-/// The number of u64 elements that fit in a typical cache line (64 bytes).
-const CACHE_LINE_U64S: usize = 64 / std::mem::size_of::<u64>();
-
-impl CumulativeROHistogram {
-    /// Creates a cumulative histogram from its raw parts.
-    ///
-    /// The `count` vector must contain **cumulative** counts (a running prefix
-    /// sum of individual bucket counts).
-    ///
-    /// Returns an error if:
-    /// - `index` and `count` have different lengths
-    /// - any index is out of range for the config
-    /// - the indices are not in strictly ascending order
-    /// - the counts are not strictly non-decreasing
-    /// - any count is zero
-    pub fn from_parts(config: Config, index: Vec<u32>, count: Vec<u64>) -> Result<Self, Error> {
-        if index.len() != count.len() {
-            return Err(Error::IncompatibleParameters);
+macro_rules! define_cumulative_histogram {
+    ($name:ident, $ref_name:ident, $iter:ident, $qr_iter:ident, $hist:ident, $sparse:ident, $count:ty) => {
+        /// A read-only, cumulative histogram for fast quantile queries.
+        ///
+        /// This is a variant of the [`SparseHistogram`] with cumulative counts
+        /// (starting from the first bucket) for each bucket that is present.
+        ///
+        /// Stores only non-zero buckets in columnar form, like [`SparseHistogram`],
+        /// but with **cumulative** counts: `count[i]` equals the total number of
+        /// observations in buckets `0..=i` (i.e., a running prefix sum). The last
+        /// element of `count` equals the total observation count.
+        ///
+        /// `CumulativeROHistogram` is intended to be read-only—i.e. it shouldn't
+        /// accept updates for new observations, because such operations would be
+        /// expensive given counts are cumulative. On the other hand, querying
+        /// percentiles is cheaper than standard or sparse histograms without
+        /// cumulative counts, which can be performed with binary search.
+        /// Additional methods to provide the percentile range each or all bucket(s)
+        /// represent are implmented to facilitate analytics based on such histograms.
+        // `mean` is an `f64`, so `Eq` cannot be derived for this type.
+        #[derive(Clone, Debug, PartialEq)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+        pub struct $name {
+            config: Config,
+            index: Vec<u32>,
+            count: Vec<$count>,
+            /// Mean of all observations, estimated using bucket midpoints.
+            /// `None` when the histogram is empty. Computed at construction.
+            mean: Option<f64>,
         }
 
-        let total_buckets = config.total_buckets();
-        let mut prev_idx = None;
-        for &idx in &index {
-            if idx as usize >= total_buckets {
-                return Err(Error::OutOfRange);
+        impl $name {
+            /// Creates a cumulative histogram from its raw parts.
+            ///
+            /// The `count` vector must contain **cumulative** counts (a running prefix
+            /// sum of individual bucket counts).
+            ///
+            /// Returns an error if:
+            /// - `index` and `count` have different lengths
+            /// - any index is out of range for the config
+            /// - the indices are not in strictly ascending order
+            /// - the counts are not strictly non-decreasing
+            /// - any count is zero
+            pub fn from_parts(
+                config: Config,
+                index: Vec<u32>,
+                count: Vec<$count>,
+            ) -> Result<Self, Error> {
+                $ref_name::validate(&config, &index, &count)?;
+                let mean = $ref_name::compute_mean(&config, &index, &count);
+                Ok(Self {
+                    config,
+                    index,
+                    count,
+                    mean,
+                })
             }
-            if let Some(p) = prev_idx {
-                if idx <= p {
+
+            /// Consumes the histogram, returning the config, index, and cumulative
+            /// count vectors.
+            pub fn into_parts(self) -> (Config, Vec<u32>, Vec<$count>) {
+                (self.config, self.index, self.count)
+            }
+
+            /// Returns the bucket configuration.
+            pub fn config(&self) -> Config {
+                self.config
+            }
+
+            /// Returns a slice of the non-zero bucket indices.
+            pub fn index(&self) -> &[u32] {
+                &self.index
+            }
+
+            /// Returns a slice of the cumulative bucket counts.
+            pub fn count(&self) -> &[$count] {
+                &self.count
+            }
+
+            /// Returns the total number of observations across all buckets.
+            pub fn total_count(&self) -> u64 {
+                self.as_ref().total_count()
+            }
+
+            /// Returns the mean of all observations, estimated using bucket
+            /// midpoints, or `None` if the histogram is empty.
+            ///
+            /// This value is computed once at construction time.
+            pub fn mean(&self) -> Option<f64> {
+                self.mean
+            }
+
+            /// Returns the number of non-zero buckets.
+            pub fn len(&self) -> usize {
+                self.index.len()
+            }
+
+            /// Returns `true` if the histogram contains no observations.
+            pub fn is_empty(&self) -> bool {
+                self.index.is_empty()
+            }
+
+            /// Returns the quantile range `(lower, upper)` for the bucket at
+            /// position `bucket_idx` in the sparse representation.
+            ///
+            /// - `lower` is the fraction of observations strictly before this bucket
+            ///   (in `[0.0, 1.0]`).
+            /// - `upper` is the fraction of observations at or before this bucket
+            ///   (in `[0.0, 1.0]`).
+            ///
+            /// Returns `None` if the histogram is empty or `bucket_idx` is out of
+            /// range.
+            pub fn bucket_quantile_range(&self, bucket_idx: usize) -> Option<(f64, f64)> {
+                self.as_ref().bucket_quantile_range(bucket_idx)
+            }
+
+            /// Returns an iterator yielding `(Bucket, lower_quantile, upper_quantile)`
+            /// for each non-zero bucket.
+            ///
+            /// Each `Bucket` contains the **individual** (non-cumulative) count.
+            /// The quantile range `(lower, upper)` indicates the fraction of total
+            /// observations before and up to this bucket.
+            pub fn iter_with_quantiles(&self) -> $qr_iter<'_> {
+                self.as_ref().iter_with_quantiles()
+            }
+
+            /// Returns an iterator across the non-zero histogram buckets.
+            ///
+            /// Each `Bucket` contains the **individual** (non-cumulative) count for
+            /// that bucket.
+            pub fn iter(&self) -> $iter<'_> {
+                self.as_ref().iter()
+            }
+
+            /// Compute quantiles for the given values.
+            pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                self.as_ref().quantiles(quantiles)
+            }
+
+            /// Compute a single quantile.
+            pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
+                self.as_ref().quantile(quantile)
+            }
+
+            /// Returns a borrowed view over this histogram's storage.
+            pub fn as_ref(&self) -> $ref_name<'_> {
+                $ref_name::from_parts_with_mean(self.config, &self.index, &self.count, self.mean)
+            }
+        }
+
+        impl SampleQuantiles for $name {
+            fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                self.as_ref().quantiles(quantiles)
+            }
+        }
+
+        impl<'a> IntoIterator for &'a $name {
+            type Item = Bucket;
+            type IntoIter = $iter<'a>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
+            }
+        }
+
+        /// An iterator across the histogram buckets with individual counts.
+        pub struct $iter<'a> {
+            position: usize,
+            config: Config,
+            index: &'a [u32],
+            count: &'a [$count],
+        }
+
+        impl Iterator for $iter<'_> {
+            type Item = Bucket;
+
+            fn next(&mut self) -> Option<Bucket> {
+                if self.position >= self.index.len() {
+                    return None;
+                }
+
+                let i = self.position;
+                let individual_count = if i == 0 {
+                    self.count[0].as_u128() as u64
+                } else {
+                    self.count[i].wrapping_sub(self.count[i - 1]).as_u128() as u64
+                };
+                let bucket = Bucket {
+                    count: individual_count,
+                    range: self.config.index_to_range(self.index[i] as usize),
+                };
+
+                self.position += 1;
+                Some(bucket)
+            }
+        }
+
+        impl ExactSizeIterator for $iter<'_> {
+            fn len(&self) -> usize {
+                self.index.len() - self.position
+            }
+        }
+
+        impl std::iter::FusedIterator for $iter<'_> {}
+
+        /// An iterator yielding `(Bucket, lower_quantile, upper_quantile)` for each
+        /// non-zero bucket.
+        pub struct $qr_iter<'a> {
+            position: usize,
+            config: Config,
+            index: &'a [u32],
+            count: &'a [$count],
+            total: f64,
+        }
+
+        impl Iterator for $qr_iter<'_> {
+            type Item = (Bucket, f64, f64);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.position >= self.index.len() {
+                    return None;
+                }
+
+                let i = self.position;
+                let lower = if i == 0 {
+                    0.0
+                } else {
+                    self.count[i - 1].as_u128() as f64 / self.total
+                };
+                let upper = self.count[i].as_u128() as f64 / self.total;
+
+                let individual_count = if i == 0 {
+                    self.count[0].as_u128() as u64
+                } else {
+                    self.count[i].wrapping_sub(self.count[i - 1]).as_u128() as u64
+                };
+                let bucket = Bucket {
+                    count: individual_count,
+                    range: self.config.index_to_range(self.index[i] as usize),
+                };
+
+                self.position += 1;
+                Some((bucket, lower, upper))
+            }
+        }
+
+        impl ExactSizeIterator for $qr_iter<'_> {
+            fn len(&self) -> usize {
+                self.index.len() - self.position
+            }
+        }
+
+        impl std::iter::FusedIterator for $qr_iter<'_> {}
+
+        impl From<&$hist> for $name {
+            fn from(histogram: &$hist) -> Self {
+                let mut index = Vec::new();
+                let mut count = Vec::new();
+                let mut running_sum: $count = <$count as Count>::ZERO;
+
+                for (idx, &n) in histogram.as_slice().iter().enumerate() {
+                    if n != <$count as Count>::ZERO {
+                        running_sum = running_sum.wrapping_add(n);
+                        index.push(idx as u32);
+                        count.push(running_sum);
+                    }
+                }
+
+                let mean = $ref_name::compute_mean(&histogram.config(), &index, &count);
+                Self {
+                    config: histogram.config(),
+                    index,
+                    count,
+                    mean,
+                }
+            }
+        }
+
+        impl From<&$sparse> for $name {
+            fn from(histogram: &$sparse) -> Self {
+                let mut running_sum: $count = <$count as Count>::ZERO;
+                let cumulative: Vec<$count> = histogram
+                    .count()
+                    .iter()
+                    .map(|&n| {
+                        running_sum = running_sum.wrapping_add(n);
+                        running_sum
+                    })
+                    .collect();
+
+                let index = histogram.index().to_vec();
+                let mean = $ref_name::compute_mean(&histogram.config(), &index, &cumulative);
+                Self {
+                    config: histogram.config(),
+                    index,
+                    count: cumulative,
+                    mean,
+                }
+            }
+        }
+
+        // ── Borrowed view ─────────────────────────────────────────────────────
+
+        /// A borrowed view over cumulative histogram storage.
+        ///
+        /// Holds references to `index` and `count` slices together with the
+        /// [`Config`], mirroring the read-only API surface of the owned histogram
+        /// type.
+        ///
+        /// The type is [`Copy`] — passing it around is cheap. Use
+        /// `as_ref()` on the owned type or the `From<&Owned>` impl to obtain one.
+        // `mean` is an `f64`, so `Eq` cannot be derived for this type.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub struct $ref_name<'a> {
+            config: Config,
+            index: &'a [u32],
+            count: &'a [$count],
+            /// Midpoint-estimated mean; `None` when empty.
+            mean: Option<f64>,
+        }
+
+        impl<'a> $ref_name<'a> {
+            /// Validates the slice invariants (same semantics as the owned `from_parts`).
+            fn validate(config: &Config, index: &[u32], count: &[$count]) -> Result<(), Error> {
+                if index.len() != count.len() {
                     return Err(Error::IncompatibleParameters);
                 }
-            }
-            prev_idx = Some(idx);
-        }
 
-        let mut prev_count = None;
-        for &c in &count {
-            if c == 0 {
-                return Err(Error::IncompatibleParameters);
+                let total_buckets = config.total_buckets();
+                let mut prev_idx = None;
+                for &idx in index {
+                    if idx as usize >= total_buckets {
+                        return Err(Error::OutOfRange);
+                    }
+                    if let Some(p) = prev_idx {
+                        if idx <= p {
+                            return Err(Error::IncompatibleParameters);
+                        }
+                    }
+                    prev_idx = Some(idx);
+                }
+
+                let mut prev_count = None;
+                for &c in count {
+                    if c == <$count as Count>::ZERO {
+                        return Err(Error::IncompatibleParameters);
+                    }
+                    if let Some(p) = prev_count {
+                        if c < p {
+                            return Err(Error::IncompatibleParameters);
+                        }
+                    }
+                    prev_count = Some(c);
+                }
+
+                Ok(())
             }
-            if let Some(p) = prev_count {
-                if c < p {
-                    return Err(Error::IncompatibleParameters);
+
+            /// Creates a borrowed view, validating all invariants.
+            ///
+            /// Returns the same errors as the owned `from_parts`.
+            pub fn from_parts(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+            ) -> Result<Self, Error> {
+                Self::validate(&config, index, count)?;
+                let mean = Self::compute_mean(&config, index, count);
+                Ok(Self {
+                    config,
+                    index,
+                    count,
+                    mean,
+                })
+            }
+
+            /// Creates a borrowed view without validating invariants.
+            ///
+            /// # Safety
+            ///
+            /// Caller must ensure `index` and `count` satisfy the same invariants
+            /// as the owned `from_parts`.
+            pub fn from_parts_unchecked(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+            ) -> Self {
+                let mean = Self::compute_mean(&config, index, count);
+                Self {
+                    config,
+                    index,
+                    count,
+                    mean,
                 }
             }
-            prev_count = Some(c);
-        }
 
-        Ok(Self {
-            config,
-            index,
-            count,
-        })
-    }
-
-    /// Consumes the histogram, returning the config, index, and cumulative
-    /// count vectors.
-    pub fn into_parts(self) -> (Config, Vec<u32>, Vec<u64>) {
-        (self.config, self.index, self.count)
-    }
-
-    /// Returns the bucket configuration.
-    pub fn config(&self) -> Config {
-        self.config
-    }
-
-    /// Returns a slice of the non-zero bucket indices.
-    pub fn index(&self) -> &[u32] {
-        &self.index
-    }
-
-    /// Returns a slice of the cumulative bucket counts.
-    pub fn count(&self) -> &[u64] {
-        &self.count
-    }
-
-    /// Returns the total number of observations across all buckets.
-    pub fn total_count(&self) -> u64 {
-        self.count.last().copied().unwrap_or(0)
-    }
-
-    /// Returns the number of non-zero buckets.
-    pub fn len(&self) -> usize {
-        self.index.len()
-    }
-
-    /// Returns `true` if the histogram contains no observations.
-    pub fn is_empty(&self) -> bool {
-        self.index.is_empty()
-    }
-
-    /// Returns the quantile range `(lower, upper)` for the bucket at
-    /// position `bucket_idx` in the sparse representation.
-    ///
-    /// - `lower` is the fraction of observations strictly before this bucket
-    ///   (in `[0.0, 1.0]`).
-    /// - `upper` is the fraction of observations at or before this bucket
-    ///   (in `[0.0, 1.0]`).
-    ///
-    /// Returns `None` if the histogram is empty or `bucket_idx` is out of
-    /// range.
-    pub fn bucket_quantile_range(&self, bucket_idx: usize) -> Option<(f64, f64)> {
-        if bucket_idx >= self.count.len() {
-            return None;
-        }
-        let total = self.count.last().copied()? as f64;
-        if total == 0.0 {
-            return None;
-        }
-        let lower = if bucket_idx == 0 {
-            0.0
-        } else {
-            self.count[bucket_idx - 1] as f64 / total
-        };
-        let upper = self.count[bucket_idx] as f64 / total;
-        Some((lower, upper))
-    }
-
-    /// Returns an iterator yielding `(Bucket, lower_quantile, upper_quantile)`
-    /// for each non-zero bucket.
-    ///
-    /// Each `Bucket` contains the **individual** (non-cumulative) count.
-    /// The quantile range `(lower, upper)` indicates the fraction of total
-    /// observations before and up to this bucket.
-    pub fn iter_with_quantiles(&self) -> QuantileRangeIter<'_> {
-        let total = self.count.last().copied().unwrap_or(0) as f64;
-        QuantileRangeIter {
-            position: 0,
-            histogram: self,
-            total,
-        }
-    }
-
-    /// Returns an iterator across the non-zero histogram buckets.
-    ///
-    /// Each `Bucket` contains the **individual** (non-cumulative) count for
-    /// that bucket.
-    pub fn iter(&self) -> Iter<'_> {
-        Iter {
-            position: 0,
-            histogram: self,
-        }
-    }
-
-    /// Returns the individual (non-cumulative) count at the given position.
-    fn individual_count(&self, position: usize) -> u64 {
-        if position == 0 {
-            self.count[0]
-        } else {
-            self.count[position] - self.count[position - 1]
-        }
-    }
-
-    /// Find the first position where cumulative count >= target.
-    /// Uses linear scan for small slices (fits in one cache line),
-    /// binary search otherwise.
-    fn find_quantile_position(&self, target: u128) -> usize {
-        if self.count.len() <= CACHE_LINE_U64S {
-            // Linear scan for small data
-            for (i, &c) in self.count.iter().enumerate() {
-                if c as u128 >= target {
-                    return i;
+            /// Borrowed view with a precomputed mean; used by the owned
+            /// type's `as_ref()` / `From` impls, which already cache it.
+            fn from_parts_with_mean(
+                config: Config,
+                index: &'a [u32],
+                count: &'a [$count],
+                mean: Option<f64>,
+            ) -> Self {
+                Self {
+                    config,
+                    index,
+                    count,
+                    mean,
                 }
             }
-            self.count.len() - 1
-        } else {
-            // Binary search for larger data
-            let pos = self.count.partition_point(|&c| (c as u128) < target);
-            pos.min(self.count.len() - 1)
-        }
-    }
-}
 
-impl SampleQuantiles for CumulativeROHistogram {
-    fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
-        // Validate all quantile values
-        for q in quantiles {
-            if !(0.0..=1.0).contains(q) {
-                return Err(Error::InvalidQuantile);
+            /// Returns the bucket configuration.
+            pub fn config(&self) -> Config {
+                self.config
+            }
+
+            /// Returns a slice of the non-zero bucket indices.
+            pub fn index(&self) -> &'a [u32] {
+                self.index
+            }
+
+            /// Returns a slice of the cumulative bucket counts.
+            pub fn count(&self) -> &'a [$count] {
+                self.count
+            }
+
+            /// Returns the number of non-zero buckets.
+            pub fn len(&self) -> usize {
+                self.index.len()
+            }
+
+            /// Returns `true` if the histogram contains no observations.
+            pub fn is_empty(&self) -> bool {
+                self.index.is_empty()
+            }
+
+            /// Returns the total number of observations across all buckets.
+            pub fn total_count(&self) -> u64 {
+                self.count.last().map(|c| c.as_u128() as u64).unwrap_or(0)
+            }
+
+            /// Returns the quantile range `(lower, upper)` for the bucket at
+            /// position `bucket_idx` in the sparse representation.
+            pub fn bucket_quantile_range(&self, bucket_idx: usize) -> Option<(f64, f64)> {
+                if bucket_idx >= self.count.len() {
+                    return None;
+                }
+                let total = self.count.last().map(|c| c.as_u128() as f64)?;
+                if total == 0.0 {
+                    return None;
+                }
+                let lower = if bucket_idx == 0 {
+                    0.0
+                } else {
+                    self.count[bucket_idx - 1].as_u128() as f64 / total
+                };
+                let upper = self.count[bucket_idx].as_u128() as f64 / total;
+                Some((lower, upper))
+            }
+
+            /// Returns an iterator across the non-zero histogram buckets.
+            pub fn iter(&self) -> $iter<'a> {
+                $iter {
+                    position: 0,
+                    config: self.config,
+                    index: self.index,
+                    count: self.count,
+                }
+            }
+
+            /// Returns an iterator yielding `(Bucket, lower_quantile, upper_quantile)`
+            /// for each non-zero bucket.
+            pub fn iter_with_quantiles(&self) -> $qr_iter<'a> {
+                let total = self.count.last().map(|c| c.as_u128() as f64).unwrap_or(0.0);
+                $qr_iter {
+                    position: 0,
+                    config: self.config,
+                    index: self.index,
+                    count: self.count,
+                    total,
+                }
+            }
+
+            /// Compute quantiles for the given values.
+            pub fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantiles(self, quantiles)
+            }
+
+            /// Compute a single quantile.
+            pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
+                <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+
+            /// Returns the midpoint-estimated mean, or `None` if empty.
+            ///
+            /// Stored on the view, so this is a cheap field access like
+            /// [`count`](Self::count) — no per-call computation.
+            pub fn mean(&self) -> Option<f64> {
+                self.mean
+            }
+
+            /// Computes the mean of all observations using bucket midpoints.
+            ///
+            /// `count` holds cumulative counts. Returns `None` when there are
+            /// no observations.
+            fn compute_mean(config: &Config, index: &[u32], count: &[$count]) -> Option<f64> {
+                let total = count.last()?.as_u128();
+                if total == 0 {
+                    return None;
+                }
+
+                let mut weighted_sum = 0.0_f64;
+                for i in 0..index.len() {
+                    let individual = Self::individual_count(count, i) as f64;
+                    let range = config.index_to_range(index[i] as usize);
+                    let midpoint = (*range.start() as f64 + *range.end() as f64) / 2.0;
+                    weighted_sum += midpoint * individual;
+                }
+
+                Some(weighted_sum / total as f64)
+            }
+
+            /// Returns the individual (non-cumulative) count at the given position.
+            fn individual_count(count: &[$count], position: usize) -> u64 {
+                if position == 0 {
+                    count[0].as_u128() as u64
+                } else {
+                    count[position].wrapping_sub(count[position - 1]).as_u128() as u64
+                }
+            }
+
+            /// Find the first position where cumulative count >= target.
+            fn find_quantile_position(count: &[$count], target: u128) -> usize {
+                const CACHE_LINE_ENTRIES: usize = 64 / std::mem::size_of::<$count>();
+                if count.len() <= CACHE_LINE_ENTRIES {
+                    for (i, c) in count.iter().enumerate() {
+                        if c.as_u128() >= target {
+                            return i;
+                        }
+                    }
+                    count.len() - 1
+                } else {
+                    let pos = count.partition_point(|c| c.as_u128() < target);
+                    pos.min(count.len() - 1)
+                }
             }
         }
 
-        // Empty histogram
-        if self.count.is_empty() {
-            return Ok(None);
-        }
+        impl SampleQuantiles for $ref_name<'_> {
+            fn quantiles(&self, quantiles: &[f64]) -> Result<Option<QuantilesResult>, Error> {
+                // Validate all quantile values
+                for q in quantiles {
+                    if !(0.0..=1.0).contains(q) {
+                        return Err(Error::InvalidQuantile);
+                    }
+                }
 
-        let total_count = *self.count.last().unwrap() as u128;
-        if total_count == 0 {
-            return Ok(None);
-        }
+                // Empty histogram
+                if self.count.is_empty() {
+                    return Ok(None);
+                }
 
-        // Sort and dedup requested quantiles
-        let mut sorted: Vec<Quantile> = quantiles
-            .iter()
-            .map(|&q| Quantile::new(q).unwrap())
-            .collect();
-        sorted.sort();
-        sorted.dedup();
+                let total_count = self.count.last().unwrap().as_u128();
+                if total_count == 0 {
+                    return Ok(None);
+                }
 
-        // min/max from first and last entries
-        let min = Bucket {
-            count: self.count[0],
-            range: self.config.index_to_range(self.index[0] as usize),
-        };
-        let last = self.count.len() - 1;
-        let max = Bucket {
-            count: self.individual_count(last),
-            range: self.config.index_to_range(self.index[last] as usize),
-        };
+                // Sort and dedup requested quantiles
+                let mut sorted: Vec<Quantile> = quantiles
+                    .iter()
+                    .map(|&q| Quantile::new(q).unwrap())
+                    .collect();
+                sorted.sort();
+                sorted.dedup();
 
-        // Find bucket for each quantile
-        let mut entries = BTreeMap::new();
-        for quantile in &sorted {
-            let target = std::cmp::max(
-                1u128,
-                (quantile.as_f64() * total_count as f64).ceil() as u128,
-            );
+                // min/max from first and last entries
+                let min = Bucket {
+                    count: Self::individual_count(self.count, 0),
+                    range: self.config.index_to_range(self.index[0] as usize),
+                };
+                let last = self.count.len() - 1;
+                let max = Bucket {
+                    count: Self::individual_count(self.count, last),
+                    range: self.config.index_to_range(self.index[last] as usize),
+                };
 
-            let pos = self.find_quantile_position(target);
+                // Find bucket for each quantile
+                let mut entries = BTreeMap::new();
+                for quantile in &sorted {
+                    let target = std::cmp::max(
+                        1u128,
+                        (quantile.as_f64() * total_count as f64).ceil() as u128,
+                    );
 
-            entries.insert(
-                *quantile,
-                Bucket {
-                    count: self.individual_count(pos),
-                    range: self.config.index_to_range(self.index[pos] as usize),
-                },
-            );
-        }
+                    let pos = Self::find_quantile_position(self.count, target);
 
-        Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
-    }
-}
+                    entries.insert(
+                        *quantile,
+                        Bucket {
+                            count: Self::individual_count(self.count, pos),
+                            range: self.config.index_to_range(self.index[pos] as usize),
+                        },
+                    );
+                }
 
-impl<'a> IntoIterator for &'a CumulativeROHistogram {
-    type Item = Bucket;
-    type IntoIter = Iter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-/// An iterator across the histogram buckets with individual counts.
-pub struct Iter<'a> {
-    position: usize,
-    histogram: &'a CumulativeROHistogram,
-}
-
-impl Iterator for Iter<'_> {
-    type Item = Bucket;
-
-    fn next(&mut self) -> Option<Bucket> {
-        if self.position >= self.histogram.index.len() {
-            return None;
-        }
-
-        let i = self.position;
-        let bucket = Bucket {
-            count: self.histogram.individual_count(i),
-            range: self
-                .histogram
-                .config
-                .index_to_range(self.histogram.index[i] as usize),
-        };
-
-        self.position += 1;
-        Some(bucket)
-    }
-}
-
-impl ExactSizeIterator for Iter<'_> {
-    fn len(&self) -> usize {
-        self.histogram.index.len() - self.position
-    }
-}
-
-impl std::iter::FusedIterator for Iter<'_> {}
-
-/// An iterator yielding `(Bucket, lower_quantile, upper_quantile)` for each
-/// non-zero bucket.
-pub struct QuantileRangeIter<'a> {
-    position: usize,
-    histogram: &'a CumulativeROHistogram,
-    total: f64,
-}
-
-impl Iterator for QuantileRangeIter<'_> {
-    type Item = (Bucket, f64, f64);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position >= self.histogram.index.len() {
-            return None;
-        }
-
-        let i = self.position;
-        let lower = if i == 0 {
-            0.0
-        } else {
-            self.histogram.count[i - 1] as f64 / self.total
-        };
-        let upper = self.histogram.count[i] as f64 / self.total;
-
-        let bucket = Bucket {
-            count: self.histogram.individual_count(i),
-            range: self
-                .histogram
-                .config
-                .index_to_range(self.histogram.index[i] as usize),
-        };
-
-        self.position += 1;
-        Some((bucket, lower, upper))
-    }
-}
-
-impl ExactSizeIterator for QuantileRangeIter<'_> {
-    fn len(&self) -> usize {
-        self.histogram.index.len() - self.position
-    }
-}
-
-impl std::iter::FusedIterator for QuantileRangeIter<'_> {}
-
-impl From<&Histogram> for CumulativeROHistogram {
-    fn from(histogram: &Histogram) -> Self {
-        let mut index = Vec::new();
-        let mut count = Vec::new();
-        let mut running_sum: u64 = 0;
-
-        for (idx, &n) in histogram.as_slice().iter().enumerate() {
-            if n > 0 {
-                running_sum = running_sum.wrapping_add(n);
-                index.push(idx as u32);
-                count.push(running_sum);
+                Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
             }
         }
 
-        Self {
-            config: histogram.config(),
-            index,
-            count,
+        impl<'a> From<&'a $name> for $ref_name<'a> {
+            fn from(h: &'a $name) -> Self {
+                Self::from_parts_with_mean(h.config(), h.index(), h.count(), h.mean())
+            }
         }
-    }
+
+        impl<'a> IntoIterator for $ref_name<'a> {
+            type Item = Bucket;
+            type IntoIter = $iter<'a>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
+            }
+        }
+
+        impl<'a, 'b> IntoIterator for &'a $ref_name<'b> {
+            type Item = Bucket;
+            type IntoIter = $iter<'b>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                self.iter()
+            }
+        }
+    };
 }
 
-impl From<&SparseHistogram> for CumulativeROHistogram {
-    fn from(histogram: &SparseHistogram) -> Self {
-        let mut running_sum: u64 = 0;
-        let cumulative: Vec<u64> = histogram
-            .count()
-            .iter()
-            .map(|&n| {
-                running_sum = running_sum.wrapping_add(n);
-                running_sum
-            })
-            .collect();
-
-        Self {
-            config: histogram.config(),
-            index: histogram.index().to_vec(),
-            count: cumulative,
-        }
-    }
-}
+define_cumulative_histogram!(
+    CumulativeROHistogram,
+    CumulativeROHistogramRef,
+    CumulativeIter,
+    QuantileRangeIter,
+    Histogram,
+    SparseHistogram,
+    u64
+);
+define_cumulative_histogram!(
+    CumulativeROHistogram32,
+    CumulativeROHistogram32Ref,
+    CumulativeIter32,
+    QuantileRangeIter32,
+    Histogram32,
+    SparseHistogram32,
+    u32
+);
 
 #[cfg(test)]
 mod tests {
@@ -461,6 +728,70 @@ mod tests {
             assert_eq!(sq.1.range(), cq.1.range());
             assert_eq!(hq.1.count(), cq.1.count());
         }
+    }
+
+    #[test]
+    fn mean_from_parts() {
+        let config = Config::new(7, 32).unwrap();
+        // Buckets 0, 1, 2 map to single-value ranges 0, 1, 2.
+        // Individual counts: [2, 3, 5] (cumulative [2, 5, 10]).
+        // Mean = (0*2 + 1*3 + 2*5) / 10 = 13 / 10 = 1.3
+        let croh =
+            CumulativeROHistogram::from_parts(config, vec![0, 1, 2], vec![2, 5, 10]).unwrap();
+        let mean = croh.mean().unwrap();
+        assert!((mean - 1.3).abs() < 1e-9, "mean was {mean}");
+    }
+
+    #[test]
+    fn mean_uses_bucket_midpoint() {
+        let config = Config::new(7, 32).unwrap();
+        // index 384 -> range 512..=515, midpoint 513.5
+        let range = config.index_to_range(384);
+        let expected = (*range.start() as f64 + *range.end() as f64) / 2.0;
+        let croh = CumulativeROHistogram::from_parts(config, vec![384], vec![4]).unwrap();
+        assert!((croh.mean().unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_empty_is_none() {
+        let config = Config::new(7, 32).unwrap();
+        let croh = CumulativeROHistogram::from_parts(config, vec![], vec![]).unwrap();
+        assert_eq!(croh.mean(), None);
+
+        let h = Histogram::new(7, 64).unwrap();
+        assert_eq!(CumulativeROHistogram::from(&h).mean(), None);
+    }
+
+    #[test]
+    fn mean_matches_across_constructors() {
+        let mut h = Histogram::new(7, 64).unwrap();
+        for v in [1, 1, 5, 5, 5, 100, 250, 999] {
+            h.increment(v).unwrap();
+        }
+        let from_hist = CumulativeROHistogram::from(&h);
+        let from_sparse = CumulativeROHistogram::from(&SparseHistogram::from(&h));
+
+        let a = from_hist.mean().unwrap();
+        let b = from_sparse.mean().unwrap();
+        assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+
+        // Independently compute expected mean via the iterator over buckets.
+        let mut weighted = 0.0_f64;
+        let mut total = 0.0_f64;
+        for bucket in from_hist.iter() {
+            let mid = (bucket.start() as f64 + bucket.end() as f64) / 2.0;
+            weighted += mid * bucket.count() as f64;
+            total += bucket.count() as f64;
+        }
+        assert!((a - weighted / total).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let croh =
+            CumulativeROHistogram32::from_parts(config, vec![0, 1, 2], vec![2u32, 5, 10]).unwrap();
+        assert!((croh.mean().unwrap() - 1.3).abs() < 1e-9);
     }
 
     #[test]
@@ -635,5 +966,329 @@ mod tests {
 
         assert_eq!(croh.quantiles(&[1.5]), Err(Error::InvalidQuantile));
         assert_eq!(croh.quantiles(&[-0.1]), Err(Error::InvalidQuantile));
+    }
+
+    #[test]
+    fn from_histogram_u32() {
+        let mut h = Histogram32::new(7, 64).unwrap();
+        h.increment(1).unwrap();
+        h.increment(1).unwrap();
+        h.increment(5).unwrap();
+        h.increment(100).unwrap();
+        let croh = CumulativeROHistogram32::from(&h);
+        assert_eq!(croh.index().len(), 3);
+        assert_eq!(croh.count(), &[2u32, 3, 4]);
+        assert_eq!(croh.total_count(), 4);
+    }
+
+    #[test]
+    fn from_parts_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let croh =
+            CumulativeROHistogram32::from_parts(config, vec![1, 3, 5], vec![6u32, 18, 25]).unwrap();
+        assert_eq!(croh.total_count(), 25);
+    }
+
+    #[test]
+    fn quantiles_u32_match_u64() {
+        let mut h32 = Histogram32::new(4, 10).unwrap();
+        let mut h64 = Histogram::new(4, 10).unwrap();
+        for v in 1..1024u64 {
+            h32.increment(v).unwrap();
+            h64.increment(v).unwrap();
+        }
+        let c32 = CumulativeROHistogram32::from(&h32);
+        let c64 = CumulativeROHistogram::from(&h64);
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        let r32 = c32.quantiles(qs).unwrap().unwrap();
+        let r64 = c64.quantiles(qs).unwrap().unwrap();
+        for ((q32, _), (q64, _)) in r32.entries().iter().zip(r64.entries().iter()) {
+            assert_eq!(q32, q64);
+        }
+    }
+
+    // ── Ref type tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn ref_validation_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+
+        // Mismatched lengths
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[1u32, 2], &[1u64]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Out of range index
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[u32::MAX], &[1u64]),
+            Err(Error::OutOfRange)
+        );
+
+        // Non-ascending indices
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[3u32, 1], &[1u64, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Duplicate indices
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[1u32, 1], &[1u64, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Non-monotone counts
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[1u32, 3], &[5u64, 3]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Zero count
+        assert_eq!(
+            CumulativeROHistogramRef::from_parts(config, &[1u32], &[0u64]),
+            Err(Error::IncompatibleParameters)
+        );
+
+        // Valid
+        assert!(
+            CumulativeROHistogramRef::from_parts(config, &[1u32, 3, 5], &[6u64, 18, 25]).is_ok()
+        );
+
+        // Empty
+        assert!(CumulativeROHistogramRef::from_parts(config, &[], &[]).is_ok());
+    }
+
+    #[test]
+    fn ref_validation_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+
+        assert_eq!(
+            CumulativeROHistogram32Ref::from_parts(config, &[1u32, 2], &[1u32]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert_eq!(
+            CumulativeROHistogram32Ref::from_parts(config, &[u32::MAX], &[1u32]),
+            Err(Error::OutOfRange)
+        );
+        assert_eq!(
+            CumulativeROHistogram32Ref::from_parts(config, &[3u32, 1], &[1u32, 2]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert_eq!(
+            CumulativeROHistogram32Ref::from_parts(config, &[1u32, 3], &[5u32, 3]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert_eq!(
+            CumulativeROHistogram32Ref::from_parts(config, &[1u32], &[0u32]),
+            Err(Error::IncompatibleParameters)
+        );
+        assert!(
+            CumulativeROHistogram32Ref::from_parts(config, &[1u32, 3, 5], &[6u32, 18, 25]).is_ok()
+        );
+    }
+
+    #[test]
+    fn ref_quantile_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from_parts(config, owned.index(), owned.count()).unwrap();
+
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_quantile_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram32::from_parts(config, vec![1, 3, 5], vec![10u32, 40, 100])
+                .unwrap();
+        let r =
+            CumulativeROHistogram32Ref::from_parts(config, owned.index(), owned.count()).unwrap();
+
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_from_parts_unchecked_matches_owned() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r =
+            CumulativeROHistogramRef::from_parts_unchecked(config, owned.index(), owned.count());
+
+        let qs = &[0.25, 0.5, 0.75];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_from_owned_round_trip() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        let qs = &[0.0, 0.5, 1.0];
+        assert_eq!(r.quantiles(qs).unwrap(), owned.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_iter_agrees_with_owned() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        let owned_buckets: Vec<_> = owned.iter().collect();
+        let ref_buckets: Vec<_> = r.iter().collect();
+        assert_eq!(owned_buckets, ref_buckets);
+    }
+
+    #[test]
+    fn ref_iter_with_quantiles_agrees_with_owned() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        let owned_items: Vec<_> = owned.iter_with_quantiles().collect();
+        let ref_items: Vec<_> = r.iter_with_quantiles().collect();
+        assert_eq!(owned_items.len(), ref_items.len());
+        for (a, b) in owned_items.iter().zip(ref_items.iter()) {
+            assert_eq!(a.0, b.0);
+            assert!((a.1 - b.1).abs() < f64::EPSILON);
+            assert!((a.2 - b.2).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn ref_bucket_quantile_range_parity() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        for i in 0..=3 {
+            assert_eq!(owned.bucket_quantile_range(i), r.bucket_quantile_range(i));
+        }
+    }
+
+    #[test]
+    fn ref_empty_edge_case() {
+        let config = Config::new(7, 32).unwrap();
+        let r = CumulativeROHistogramRef::from_parts(config, &[], &[]).unwrap();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+        assert_eq!(r.total_count(), 0);
+        assert_eq!(r.quantiles(&[0.5]).unwrap(), None);
+        assert_eq!(r.bucket_quantile_range(0), None);
+    }
+
+    #[test]
+    fn ref_single_sample_edge_case() {
+        let mut h = Histogram::new(7, 64).unwrap();
+        h.increment(42).unwrap();
+        let owned = CumulativeROHistogram::from(&h);
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.total_count(), 1);
+        let result = r.quantile(0.5).unwrap().unwrap();
+        let q = Quantile::new(0.5).unwrap();
+        assert_eq!(result.get(&q).unwrap().end(), 42);
+    }
+
+    #[test]
+    fn ref_into_iterator() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        // IntoIterator for owned ref (consumes)
+        let buckets_consumed: Vec<_> = r.into_iter().collect();
+        // IntoIterator for &ref (borrows)
+        let buckets_borrowed: Vec<_> = (&r).into_iter().collect();
+        let owned_buckets: Vec<_> = owned.iter().collect();
+
+        assert_eq!(buckets_consumed, owned_buckets);
+        assert_eq!(buckets_borrowed, owned_buckets);
+    }
+
+    #[test]
+    fn ref_u32_symmetry() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram32::from_parts(config, vec![1, 3, 5], vec![10u32, 40, 100])
+                .unwrap();
+        let r = CumulativeROHistogram32Ref::from(&owned);
+
+        // Iter parity
+        let owned_buckets: Vec<_> = owned.iter().collect();
+        let ref_buckets: Vec<_> = r.iter().collect();
+        assert_eq!(owned_buckets, ref_buckets);
+
+        // Quantile parity
+        let qs = &[0.0, 0.5, 0.99, 1.0];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+
+        // bucket_quantile_range parity
+        for i in 0..=3 {
+            assert_eq!(owned.bucket_quantile_range(i), r.bucket_quantile_range(i));
+        }
+    }
+
+    #[test]
+    fn ref_as_ref_method() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = owned.as_ref();
+
+        let qs = &[0.5, 0.99];
+        assert_eq!(owned.quantiles(qs).unwrap(), r.quantiles(qs).unwrap());
+    }
+
+    #[test]
+    fn ref_mean_parity_u64() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![0, 1, 2], vec![2u64, 5, 10]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+        assert!((r.mean().unwrap() - 1.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ref_mean_parity_u32() {
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram32::from_parts(config, vec![0, 1, 2], vec![2u32, 5, 10]).unwrap();
+        let r = CumulativeROHistogram32Ref::from(&owned);
+        assert_eq!(owned.mean(), r.mean());
+    }
+
+    #[test]
+    fn ref_mean_empty_is_none() {
+        let config = Config::new(7, 32).unwrap();
+        let r = CumulativeROHistogramRef::from_parts(config, &[], &[]).unwrap();
+        assert_eq!(r.mean(), None);
+    }
+
+    #[test]
+    fn ref_sample_quantiles_trait() {
+        use crate::quantile::SampleQuantiles;
+        let config = Config::new(7, 32).unwrap();
+        let owned =
+            CumulativeROHistogram::from_parts(config, vec![1, 3, 5], vec![10u64, 40, 100]).unwrap();
+        let r = CumulativeROHistogramRef::from(&owned);
+
+        let qs = &[0.25, 0.75];
+        assert_eq!(
+            SampleQuantiles::quantiles(&r, qs).unwrap(),
+            SampleQuantiles::quantiles(&owned, qs).unwrap()
+        );
     }
 }
