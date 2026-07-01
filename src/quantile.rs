@@ -134,6 +134,13 @@ impl QuantilesResult {
         &self.entries
     }
 
+    /// Returns the quantile-to-bucket mappings, sorted by quantile.
+    ///
+    /// Consumes self, returning the mapping by value instead of reference.
+    pub fn into_entries(self) -> BTreeMap<Quantile, Bucket> {
+        self.entries
+    }
+
     /// Look up the bucket for a specific quantile.
     pub fn get(&self, quantile: &Quantile) -> Option<&Bucket> {
         self.entries.get(quantile)
