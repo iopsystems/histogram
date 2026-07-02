@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-01
+
+### Added
+
+- `QuantilesResult::into_entries()` — consumes the result and returns the
+  quantile-to-bucket `BTreeMap` by value, allowing iterator transformations
+  without borrowing from the original result.
+
 ## [1.4.1] - 2026-05-19
 
 ### Added
