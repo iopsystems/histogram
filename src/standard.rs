@@ -126,6 +126,27 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
+            /// Adds a compatible histogram into this histogram without allocating.
+            ///
+            /// Configurations must match. Returns [`Error::IncompatibleParameters`]
+            /// or [`Error::Overflow`] without changing any counts. Overflow is
+            /// checked per bucket, not against the sum of all counts.
+            ///
+            /// Takes two passes over the buckets: one to validate all additions,
+            /// then one to apply them. Configuration and counter storage are preserved.
+            pub fn checked_add_assign(&mut self, other: &Self) -> Result<(), Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                for (this, other) in self.buckets.iter().zip(other.buckets.iter()) {
+                    this.checked_add(*other).ok_or(Error::Overflow)?;
+                }
+                for (this, other) in self.buckets.iter_mut().zip(other.buckets.iter()) {
+                    *this = this.wrapping_add(*other);
+                }
+                Ok(())
+            }
+
             /// Adds the other histogram to this histogram and returns the result as a
             /// new histogram.
             ///
@@ -205,6 +226,119 @@ macro_rules! define_histogram {
             /// This is an inherent forwarder for [`SampleQuantiles::quantile`].
             pub fn quantile(&self, quantile: f64) -> Result<Option<QuantilesResult>, Error> {
                 <Self as SampleQuantiles>::quantile(self, quantile)
+            }
+
+            /// Returns one quantile bucket without allocating a result map.
+            ///
+            /// Uses nearest rank with quantiles in `0.0..=1.0`; zero selects the
+            /// first occupied bucket and one the last. Returns `Ok(None)` for an
+            /// empty histogram or [`Error::InvalidQuantile`] for an invalid request.
+            /// The bucket contains its individual count and inclusive value range.
+            /// Interior ranks use `ceil(quantile * total as f64)`, clamped to the
+            /// observation count; very large totals can incur floating-point rounding.
+            ///
+            /// Counts are scanned at query time; recording maintains no cached
+            /// totals or bounds. Use [`Self::quantile_buckets_into`] to share scan
+            /// work across a report's quantiles, or a cumulative snapshot for
+            /// repeated reads of completed data.
+            pub fn quantile_bucket(&self, quantile: f64) -> Result<Option<Bucket>, Error> {
+                let mut output = [None];
+                self.quantile_buckets_into(&[quantile], &mut output)?;
+                Ok(output[0].take())
+            }
+
+            /// Writes quantile buckets into caller-owned storage without allocating.
+            ///
+            /// Requests may be unsorted and repeated; results preserve their order.
+            /// Returns the number of slots written. An empty histogram writes
+            /// `None`; an empty request writes nothing. Extra output slots are untouched.
+            /// Buckets have the semantics of [`Self::quantile_bucket`].
+            ///
+            /// Validates every quantile before checking output capacity. Returns
+            /// [`Error::InvalidQuantile`] or [`Error::InsufficientOutputCapacity`]
+            /// without modifying output, including for empty histograms.
+            ///
+            /// Derives bounds and a widened total, then shares one forward rank scan.
+            /// Selecting requests in rank order without scratch allocation takes
+            /// O(Q²) work for Q requests, in addition to O(B) bucket work. Intended
+            /// for small reporting batches; cumulative snapshots suit repeated analytics.
+            pub fn quantile_buckets_into(
+                &self,
+                quantiles: &[f64],
+                output: &mut [Option<Bucket>],
+            ) -> Result<usize, Error> {
+                if quantiles.iter().any(|q| !(0.0..=1.0).contains(q)) {
+                    return Err(Error::InvalidQuantile);
+                }
+                if output.len() < quantiles.len() {
+                    return Err(Error::InsufficientOutputCapacity {
+                        required: quantiles.len(),
+                        available: output.len(),
+                    });
+                }
+                let slots = &mut output[..quantiles.len()];
+                slots.fill(None);
+                if quantiles.is_empty() {
+                    return Ok(0);
+                }
+                let Some(min_idx) = self
+                    .buckets
+                    .iter()
+                    .position(|c| *c != <$count as Count>::ZERO)
+                else {
+                    return Ok(quantiles.len());
+                };
+                let max_idx = self
+                    .buckets
+                    .iter()
+                    .rposition(|c| *c != <$count as Count>::ZERO)
+                    .unwrap();
+                let total: u128 = self.buckets[min_idx..=max_idx]
+                    .iter()
+                    .map(|c| c.as_u128())
+                    .sum();
+                let mut index = min_idx;
+                let mut partial = self.buckets[index].as_u128();
+                // Unfilled slots identify requests still to process. No per-record
+                // state, temporary vectors, or changes to the input are needed.
+                while let Some(q) = quantiles
+                    .iter()
+                    .zip(slots.iter())
+                    .filter(|(_, slot)| slot.is_none())
+                    .map(|(&q, _)| q)
+                    .min_by(f64::total_cmp)
+                {
+                    let target = ((q * total as f64).ceil() as u128).clamp(1, total);
+                    if q == 1.0 {
+                        index = max_idx;
+                    } else {
+                        while partial < target && index + 8 <= max_idx {
+                            let subtotal: u128 = self.buckets[index + 1..index + 9]
+                                .iter()
+                                .map(|c| c.as_u128())
+                                .sum();
+                            if partial + subtotal >= target {
+                                break;
+                            }
+                            partial += subtotal;
+                            index += 8;
+                        }
+                        while partial < target && index < max_idx {
+                            index += 1;
+                            partial += self.buckets[index].as_u128();
+                        }
+                    }
+                    let bucket = Bucket {
+                        count: self.buckets[index].as_u128() as u64,
+                        range: self.config.index_to_range(index),
+                    };
+                    for (&request, slot) in quantiles.iter().zip(slots.iter_mut()) {
+                        if request == q {
+                            *slot = Some(bucket.clone());
+                        }
+                    }
+                }
+                Ok(quantiles.len())
             }
         }
 

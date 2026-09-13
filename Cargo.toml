@@ -51,3 +51,7 @@ path = "examples/rezolus_memory.rs"
 [[bench]]
 name = "dense_queries"
 harness = false
+
+[[bench]]
+name = "report_reuse"
+harness = false

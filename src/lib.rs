@@ -32,58 +32,62 @@
 //! }
 //!
 //! // Quantiles use the 0.0..=1.0 scale
-//! let r50 = h.quantile(0.5).unwrap().unwrap();
-//! let r99 = h.quantile(0.99).unwrap().unwrap();
-//! // quantile() returns Result<Option<QuantilesResult>, Error>
+//! let report = h.quantiles(&[0.5, 0.99]).unwrap().unwrap();
+//! // quantiles() shares scan work and returns Result<Option<QuantilesResult>, Error>
 //! // outer unwrap: quantile value is valid
 //! // inner unwrap: histogram is non-empty
 //!
-//! let p50 = r50.get(&Quantile::new(0.5).unwrap()).unwrap();
-//! let p99 = r99.get(&Quantile::new(0.99).unwrap()).unwrap();
+//! let p50 = report.get(&Quantile::new(0.5).unwrap()).unwrap();
+//! let p99 = report.get(&Quantile::new(0.99).unwrap()).unwrap();
 //! println!("p50: {}-{}", p50.start(), p50.end());
 //! println!("p99: {}-{}", p99.start(), p99.end());
 //! ```
 //!
-//! # Counter Width
+//! # Workflow and counter width
 //!
-//! All four histogram types ship in two flavors:
+//! Choose writer ownership first: per-writer dense histograms require handoff and
+//! aggregation; shared atomic histograms may contend. Batch a report's quantiles
+//! to share scans. Convert completed data to cumulative snapshots when repeated
+//! binary-search queries justify construction cost. Dense recording keeps no
+//! cached total or bounds; reporting derives them when needed.
 //!
-//! - u64-counter family ([`Histogram`], [`AtomicHistogram`],
-//!   [`SparseHistogram`], [`CumulativeROHistogram`]): the default.
-//! - u32-counter siblings ([`Histogram32`], [`AtomicHistogram32`],
-//!   [`SparseHistogram32`], [`CumulativeROHistogram32`]): half the memory
-//!   and serialization size; counts up to 2^32 − 1 per bucket.
+//! u32 halves counter storage, not indices, object overhead, or necessarily wire
+//! size. Dense, atomic, and sparse counts must fit **per bucket**; cumulative prefix
+//! counts must fit **in total**. Recording wraps on overflow. Choose width from
+//! count bounds and reset cadence; u32 can also suit direct recording and reporting.
+//! Dense queries widen sums to u128. Widening u32 to u64 is infallible; checked
+//! narrowing uses `TryFrom`. Ensure totals fit when constructing cumulative prefixes.
 //!
-//! Conversions: widening (`u32` → `u64`) is infallible (`From`); narrowing
-//! (`u64` → `u32`) is fallible (`TryFrom`, returns [`Error::Overflow`]).
-//! Direct cross-variant + narrowing paths support the snapshot pipeline.
+//! # Reusing reporting storage
 //!
-//! # Recommended Pipeline
+//! [`Histogram::reset`] clears counts in existing storage.
+//! [`Histogram::checked_add_assign`] aggregates compatible histograms without
+//! allocating and leaves counts unchanged on overflow or configuration mismatch.
+//! It validates all additions before a second pass applies them.
 //!
-//! Pick the histogram type based on the *role* it plays:
-//!
-//! - **Recording — `AtomicHistogram` or `Histogram`.** Counts are unbounded
-//!   over the lifetime of the process; `u64` is the safe choice.
-//! - **Snapshot delta — `Histogram`, then narrowed.** Compute the delta with
-//!   `checked_sub`, then `TryFrom` into the analytics type.
-//! - **Read-only analytics — `CumulativeROHistogram32`.** Halved size, O(log n)
-//!   quantile queries, total-count check is cheaper than per-bucket.
+//! [`AtomicHistogram::load_into`] and [`AtomicHistogram::drain_into`] overwrite a
+//! compatible dense destination without allocating. Each bucket is observed or
+//! captured/cleared individually; no instantaneous histogram-wide boundary or
+//! publication of unrelated data is provided. Coordinate writers externally if an
+//! exact interval boundary is required. The 32-bit types provide the same APIs.
 //!
 //! ```
-//! use histogram::{AtomicHistogram, CumulativeROHistogram32, Histogram};
-//!
-//! let recorder = AtomicHistogram::new(7, 64).unwrap();
-//! # let snap_t0 = recorder.load();
-//! let snap_t1 = recorder.load();
-//! let delta = snap_t1.checked_sub(&snap_t0).unwrap();
-//! let analytic: CumulativeROHistogram32 =
-//!     CumulativeROHistogram32::try_from(&delta).unwrap();
+//! use histogram::{AtomicHistogram, Histogram};
+//! let recorder = AtomicHistogram::new(7, 32).unwrap();
+//! let mut window = Histogram::with_config(&recorder.config());
+//! let mut aggregate = Histogram::with_config(&recorder.config());
+//! recorder.increment(100).unwrap();
+//! recorder.drain_into(&mut window).unwrap();
+//! aggregate.checked_add_assign(&window).unwrap();
+//! assert_eq!(aggregate.quantile_bucket(0.99).unwrap().unwrap().count(), 1);
 //! ```
 //!
-//! # Allocation-free analytical queries
+//! # Allocation-free bucket queries
 //!
-//! Owned and borrowed cumulative histograms support scalar bucket queries and
-//! batches into caller-provided storage, without allocating query results.
+//! Dense histograms and owned/borrowed cumulative snapshots support scalar bucket
+//! queries and batches into caller-provided storage without allocating results.
+//! Dense batches take O(B + Q²) work for B buckets and Q requests, intended for
+//! small reporting batches. Cumulative batches take O(Q log K) for K stored buckets.
 //! Requests need not be sorted, and duplicates preserve their input positions.
 //! The existing [`SampleQuantiles`] API remains available for a result map and
 //! min/max/total metadata.
