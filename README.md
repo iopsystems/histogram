@@ -143,6 +143,58 @@ returned by `into_parts()` to inspect their capacities. Like `Vec::shrink_to_fit
 this method does not guarantee exact capacity or that the allocator returns freed
 memory to the operating system. It changes neither precision nor counter width.
 
+## Transforming retained cumulative snapshots
+
+Owned cumulative histograms and their borrowed views support `checked_add` and
+`downsample`, returning new owned cumulative snapshots. These operations work on
+individual counts derived from adjacent prefixes. Inputs stay unchanged.
+
+```rust
+use histogram::{CumulativeROHistogram32, Histogram};
+
+let mut first = Histogram::new(10, 30).unwrap();
+let mut second = Histogram::new(7, 30).unwrap();
+first.increment(1000).unwrap();
+second.increment(2000).unwrap();
+let first = CumulativeROHistogram32::try_from(&first).unwrap();
+let second = CumulativeROHistogram32::try_from(&second).unwrap();
+// Choose a common geometry explicitly before merging.
+let first = first.downsample(7).unwrap();
+let mut summary = first.as_ref().checked_add(&second.as_ref()).unwrap();
+assert_eq!(summary.total_count(), 2);
+summary.shrink_to_fit(); // Optional retention decision after transformation.
+let p99 = summary.quantile_bucket(0.99).unwrap();
+```
+
+Addition requires matching configurations and counter widths. It rejects a
+combined total above `u32::MAX` or `u64::MAX`, including disjoint buckets whose
+individual counts fit. Use `CumulativeROHistogram::from(&narrow)` to widen before
+merging; narrow the result with `CumulativeROHistogram32::try_from(&wide)` only
+when its total fits. Different maximum value powers are rejected. Downsampling
+requires a strictly smaller grouping power and preserves range, width and total.
+
+For n and m stored input buckets and k occupied output buckets, addition takes
+O(n + m) time and O(k) output space; downsampling takes O(n) time and O(k) output
+space. Both validate input indices/prefixes, omit zero individual counts and
+allocate two growing vectors without a dense intermediate. Inputs coexist with
+the output and any allocator-internal reallocation overlap. Output vectors may
+retain spare capacity; compaction is separate.
+
+The output mean is recomputed from output bucket midpoints. Downsampling can
+change this estimate; neither operation recovers exact raw-observation means or
+preserves externally supplied cached moments. Serialized representation is unchanged.
+
+For many windows, repeated `checked_add` calls rescan the growing accumulator
+and allocate each result. A balanced reduction or an explicitly owned dense
+accumulator populated from `snapshot.iter()` may suit different occupancy and
+window counts. Iterator buckets contain individual counts; `snapshot.count()`
+contains prefixes and must not be treated as independent bucket counts. When
+using a dense accumulator, check the combined total before wrapping recorder
+operations or conversion. Benchmark these application choices separately from
+downstream quantile reads with `cargo bench --bench cumulative_transforms`.
+That benchmark uses fully overlapping windows at 8 or 2,048 occupied buckets;
+partially overlapping windows can grow the output and change the tradeoff.
+
 ## Features
 
 - `serde` -- Enables `Serialize` and `Deserialize` for histogram types.

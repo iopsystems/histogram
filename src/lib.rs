@@ -124,6 +124,28 @@
 //! assert_eq!(cumulative.total_count(), 1);
 //! ```
 //!
+//! # Transforming retained snapshots
+//!
+//! Cumulative snapshots and their borrowed views provide `checked_add` and
+//! `downsample`, returning new owned snapshots without changing their inputs.
+//! Addition requires identical configurations/widths and checks combined total
+//! overflow. Downsampling requires a strictly lower grouping power and preserves
+//! maximum value power. Both recompute the mean from output bucket midpoints;
+//! this is an estimate, not recovery of exact raw-observation moments.
+//!
+//! ```
+//! use histogram::{CumulativeROHistogram32, Histogram};
+//! let mut a = Histogram::new(10, 30).unwrap();
+//! let mut b = Histogram::new(7, 30).unwrap();
+//! a.increment(1000).unwrap();
+//! b.increment(2000).unwrap();
+//! let a = CumulativeROHistogram32::try_from(&a).unwrap().downsample(7).unwrap();
+//! let b = CumulativeROHistogram32::try_from(&b).unwrap();
+//! let summary = a.as_ref().checked_add(&b.as_ref()).unwrap();
+//! assert_eq!(summary.total_count(), 2);
+//! assert!(summary.quantile_bucket(0.99).unwrap().is_some());
+//! ```
+//!
 //! # Background
 //! Please see: <https://h2histogram.org>
 

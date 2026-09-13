@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Checked addition and downsampling on owned and borrowed cumulative snapshots,
+  for both counter widths. Transforms return owned output, validate input storage,
+  and recompute midpoint means; addition checks combined total-count overflow.
 - Opt-in `shrink_to_fit()` on owned sparse and cumulative histograms, with both
   `u64` and `u32` counters, to reduce spare vector capacity before retention.
 - Allocation-free `quantile_bucket()` and `quantile_buckets_into()` queries on

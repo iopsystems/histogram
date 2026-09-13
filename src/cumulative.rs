@@ -24,6 +24,8 @@ macro_rules! define_cumulative_histogram {
         /// cumulative counts, which can be performed with binary search.
         /// Additional methods to provide the percentile range each or all bucket(s)
         /// represent are implmented to facilitate analytics based on such histograms.
+        /// Analytical `checked_add` and `downsample` operations return new owned
+        /// snapshots; they do not update a recorder or mutate the retained inputs.
         // `mean` is an `f64`, so `Eq` cannot be derived for this type.
         #[derive(Clone, Debug, PartialEq)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -84,6 +86,47 @@ macro_rules! define_cumulative_histogram {
             pub fn shrink_to_fit(&mut self) {
                 self.index.shrink_to_fit();
                 self.count.shrink_to_fit();
+            }
+
+            /// Merges two immutable snapshots into a new owned cumulative histogram.
+            ///
+            /// Configurations and counter widths must match. For different grouping
+            /// powers, explicitly [`Self::downsample`] to a common lower power first;
+            /// different maximum value powers are rejected. Widen u32 snapshots
+            /// explicitly before merging with u64 snapshots.
+            ///
+            /// Returns [`Error::Overflow`] if the combined **total** exceeds the
+            /// counter width, even when each individual bucket count would fit.
+            /// Incompatible configurations or invalid prefix/index storage are
+            /// rejected. Neither input is modified, including on error.
+            ///
+            /// Runs in O(n + m) time for n and m stored input buckets. Allocates two
+            /// growing output vectors, O(k) space for k occupied output buckets,
+            /// with possible spare capacity; no dense or sparse intermediate is
+            /// built. Both inputs coexist with the output during construction.
+            /// Use [`Self::shrink_to_fit`] separately if desired for retention.
+            /// Zero individual counts are omitted. The output mean is recomputed
+            /// from its bucket midpoints, not from input cached means or raw moments.
+            pub fn checked_add(&self, other: &Self) -> Result<Self, Error> {
+                self.as_ref().checked_add(&other.as_ref())
+            }
+
+            /// Returns a new cumulative snapshot at a strictly lower grouping power.
+            ///
+            /// The maximum value power and counter width are unchanged. Fine
+            /// buckets nest within the coarser geometry, so individual counts and
+            /// the total are preserved exactly; the original observations within
+            /// each bucket cannot be recovered. The estimated mean is recomputed
+            /// from the **output** bucket midpoints and may therefore change.
+            ///
+            /// Returns [`Error::IncompatibleParameters`] for an equal or greater
+            /// grouping power. Invalid prefix/index storage is also rejected.
+            /// Input storage is unchanged. Runs in O(n) time and allocates two
+            /// growing output vectors, O(k) space for k occupied output buckets,
+            /// without a dense intermediate. Input and output coexist; spare
+            /// capacity can be compacted separately with [`Self::shrink_to_fit`].
+            pub fn downsample(&self, grouping_power: u8) -> Result<Self, Error> {
+                self.as_ref().downsample(grouping_power)
             }
 
             /// Returns the bucket configuration.
@@ -377,6 +420,90 @@ macro_rules! define_cumulative_histogram {
         }
 
         impl<'a> $ref_name<'a> {
+            /// Merges borrowed snapshots into a new owned histogram.
+            ///
+            /// Uses the compatibility, checked-total, midpoint-mean and allocation
+            /// contract of the owned histogram's `checked_add`. Both borrowed inputs
+            /// remain unchanged; their storage is validated before allocating output.
+            /// Runs in O(n + m) time with O(k) output storage and no dense intermediate.
+            pub fn checked_add(&self, other: &Self) -> Result<$name, Error> {
+                if self.config != other.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                Self::validate(&self.config, self.index, self.count)?;
+                Self::validate(&other.config, other.index, other.count)?;
+                let zero = <$count as Count>::ZERO;
+                self.count
+                    .last()
+                    .copied()
+                    .unwrap_or(zero)
+                    .checked_add(other.count.last().copied().unwrap_or(zero))
+                    .ok_or(Error::Overflow)?;
+
+                let mut index = Vec::new();
+                let mut count = Vec::new();
+                let (mut i, mut j) = (0, 0);
+                let mut total: $count = zero;
+                while i < self.index.len() || j < other.index.len() {
+                    let idx = match (self.index.get(i), other.index.get(j)) {
+                        (Some(&a), Some(&b)) => a.min(b),
+                        (Some(&a), None) => a,
+                        (None, Some(&b)) => b,
+                        (None, None) => break,
+                    };
+                    let mut delta: $count = zero;
+                    if self.index.get(i) == Some(&idx) {
+                        delta = Self::individual_count(self.count, i) as $count;
+                        i += 1;
+                    }
+                    if other.index.get(j) == Some(&idx) {
+                        delta = delta
+                            .checked_add(Self::individual_count(other.count, j) as $count)
+                            .ok_or(Error::Overflow)?;
+                        j += 1;
+                    }
+                    if delta != zero {
+                        total = total.checked_add(delta).ok_or(Error::Overflow)?;
+                        index.push(idx);
+                        count.push(total);
+                    }
+                }
+                $name::from_parts(self.config, index, count)
+            }
+
+            /// Downsamples a borrowed snapshot into a new owned histogram.
+            ///
+            /// Uses the owned histogram's `downsample` contract: strictly lower
+            /// grouping power, unchanged range/width/total, and a mean recomputed
+            /// from output midpoints. Validates input storage before allocating.
+            /// Runs in O(n) time with O(k) output storage and no dense intermediate.
+            pub fn downsample(&self, grouping_power: u8) -> Result<$name, Error> {
+                if grouping_power >= self.config.grouping_power() {
+                    return Err(Error::IncompatibleParameters);
+                }
+                Self::validate(&self.config, self.index, self.count)?;
+                let config = Config::new(grouping_power, self.config.max_value_power())?;
+                let mut index = Vec::new();
+                let mut count = Vec::new();
+                for (i, &idx) in self.index.iter().enumerate() {
+                    if Self::individual_count(self.count, i) == 0 {
+                        continue;
+                    }
+                    let target = config
+                        .value_to_index(self.config.index_to_lower_bound(idx as usize))?
+                        as u32;
+                    if index.last() == Some(&target) {
+                        // The last fine prefix in a coarse bucket already includes
+                        // every individual count assigned to that bucket.
+                        *count.last_mut().unwrap() = self.count[i];
+                    } else {
+                        index.push(target);
+                        count.push(self.count[i]);
+                    }
+                }
+                $name::from_parts(config, index, count)
+            }
+
             /// Validates the slice invariants (same semantics as the owned `from_parts`).
             fn validate(config: &Config, index: &[u32], count: &[$count]) -> Result<(), Error> {
                 if index.len() != count.len() {
