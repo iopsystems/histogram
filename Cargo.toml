@@ -47,3 +47,7 @@ harness = false
 [[example]]
 name = "rezolus_memory"
 path = "examples/rezolus_memory.rs"
+
+[[bench]]
+name = "dense_queries"
+harness = false
