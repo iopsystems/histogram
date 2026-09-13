@@ -61,6 +61,16 @@ macro_rules! define_histogram {
                 Ok(())
             }
 
+            /// Reset all bucket counts to zero, preserving the configuration and
+            /// existing counter allocation for reuse in another reporting interval.
+            ///
+            /// This takes time proportional to the number of buckets and does not
+            /// allocate. The histogram reports no observations until values are
+            /// recorded again.
+            pub fn reset(&mut self) {
+                self.buckets.fill(<$count as Count>::ZERO);
+            }
+
             /// Get a reference to the raw counters.
             pub fn as_slice(&self) -> &[$count] {
                 &self.buckets
