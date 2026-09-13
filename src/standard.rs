@@ -205,29 +205,30 @@ macro_rules! define_histogram {
                         return Err(Error::InvalidQuantile);
                     }
                 }
-                let total_count: u128 = self.buckets.iter().map(|v| v.as_u128()).sum();
-                if total_count == 0 {
+                // Locate the occupied range before summing so empty tails are
+                // visited only by the bounds searches, not again for the total.
+                let Some(min_idx) = self
+                    .buckets
+                    .iter()
+                    .position(|c| *c != <$count as Count>::ZERO)
+                else {
                     return Ok(None);
-                }
+                };
+                let max_idx = self
+                    .buckets
+                    .iter()
+                    .rposition(|c| *c != <$count as Count>::ZERO)
+                    .unwrap();
+                let total_count: u128 = self.buckets[min_idx..=max_idx]
+                    .iter()
+                    .map(|v| v.as_u128())
+                    .sum();
                 let mut sorted: Vec<Quantile> = quantiles
                     .iter()
                     .map(|&q| Quantile::new(q).unwrap())
                     .collect();
                 sorted.sort();
                 sorted.dedup();
-
-                let mut min_idx = None;
-                let mut max_idx = None;
-                for (i, count) in self.buckets.iter().enumerate() {
-                    if *count != <$count as Count>::ZERO {
-                        if min_idx.is_none() {
-                            min_idx = Some(i);
-                        }
-                        max_idx = Some(i);
-                    }
-                }
-                let min_idx = min_idx.unwrap();
-                let max_idx = max_idx.unwrap();
 
                 let min = Bucket {
                     count: self.buckets[min_idx].as_u128() as u64,
@@ -238,13 +239,27 @@ macro_rules! define_histogram {
                     range: self.config.index_to_range(max_idx),
                 };
 
-                let mut bucket_idx = 0;
+                let mut bucket_idx = min_idx;
                 let mut partial_sum = self.buckets[bucket_idx].as_u128();
                 let mut entries = BTreeMap::new();
 
                 for quantile in &sorted {
                     let count =
                         std::cmp::max(1, (quantile.as_f64() * total_count as f64).ceil() as u128);
+                    // Skip complete blocks whose cumulative count is below the
+                    // target. Widen before summing: even eight counters can
+                    // exceed u64. Scan the target block (or short tail) below.
+                    while partial_sum < count && bucket_idx + 8 < self.buckets.len() {
+                        let subtotal: u128 = self.buckets[bucket_idx + 1..bucket_idx + 9]
+                            .iter()
+                            .map(|c| c.as_u128())
+                            .sum();
+                        if partial_sum + subtotal >= count {
+                            break;
+                        }
+                        partial_sum += subtotal;
+                        bucket_idx += 8;
+                    }
                     loop {
                         if partial_sum >= count {
                             entries.insert(
