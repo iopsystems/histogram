@@ -1,6 +1,6 @@
 [package]
 name = "histogram"
-version = "1.5.1-alpha.1"
+version = "1.5.1-alpha.2"
 edition = "2024"
 authors = ["Brian Martin <brian@iop.systems>", "Yao Yue <yao@iop.systems>"]
 license = "MIT OR Apache-2.0"
@@ -22,6 +22,7 @@ arrow = "58.1.0"
 criterion = "0.8"
 parquet = "58.1.0"
 rand = "0.10"
+serde_json = "1"
 
 [features]
 schemars = ["dep:schemars", "serde"]
@@ -33,6 +34,10 @@ harness = false
 
 [[bench]]
 name = "cumulative_queries"
+harness = false
+
+[[bench]]
+name = "snapshot_compaction"
 harness = false
 
 [[example]]

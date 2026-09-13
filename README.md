@@ -119,6 +119,30 @@ the output; extra output slots are left untouched. Empty requests write nothing.
 The existing `quantile()`/`quantiles()` APIs still provide a sorted result map,
 total count and min/max metadata when those are needed.
 
+## Compacting retained snapshots
+
+Sparse and cumulative snapshots use vectors that can retain spare capacity after
+construction. For snapshots you intend to keep, call `shrink_to_fit()` explicitly:
+
+```rust
+use histogram::{CumulativeROHistogram32, Histogram};
+
+let mut recorder = Histogram::new(10, 30).unwrap();
+recorder.increment(1000).unwrap();
+let mut retained = CumulativeROHistogram32::try_from(&recorder).unwrap();
+retained.shrink_to_fit();
+```
+
+All four owned sparse/cumulative types support this method. It preserves counts,
+quantiles, cached means, and serialization. It can reallocate and move the backing
+vectors, so budget the one-time cost at the retention boundary. Short-lived
+snapshots can skip it; conversions keep their existing allocation behavior.
+
+Slice lengths describe logical payload, not allocated capacity. Use the vectors
+returned by `into_parts()` to inspect their capacities. Like `Vec::shrink_to_fit`,
+this method does not guarantee exact capacity or that the allocator returns freed
+memory to the operating system. It changes neither precision nor counter width.
+
 ## Features
 
 - `serde` -- Enables `Serialize` and `Deserialize` for histogram types.

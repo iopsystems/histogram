@@ -70,6 +70,22 @@ macro_rules! define_cumulative_histogram {
                 (self.config, self.index, self.count)
             }
 
+            /// Shrinks spare capacity in the index and cumulative count vectors.
+            ///
+            /// This is an opt-in retention step, useful after construction when
+            /// the snapshot will be kept for a long time. Bucket indices, counts,
+            /// configuration, query results, and the cached mean are unchanged;
+            /// prefixes and the mean are not recomputed.
+            ///
+            /// Calls [`Vec::shrink_to_fit`] on each vector, which may reallocate
+            /// and move its contents. The allocator may retain extra capacity or
+            /// freed memory; exact capacity and a decrease in process RSS are not
+            /// guaranteed. Conversion does not perform this step automatically.
+            pub fn shrink_to_fit(&mut self) {
+                self.index.shrink_to_fit();
+                self.count.shrink_to_fit();
+            }
+
             /// Returns the bucket configuration.
             pub fn config(&self) -> Config {
                 self.config
