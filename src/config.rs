@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 /// `grouping_power` should be set such that `2^(-1 * grouping_power)` is an
 /// acceptable relative error. Rephrased, we can plug-in the acceptable
 /// relative error into `grouping_power = ceil(log2(1/e))`. For example, if we
-/// want to limit the error to 0.1% (0.001) we should set `grouping_power = 7`.
+/// want to limit the relative error to 0.1% (0.001), we should set
+/// `grouping_power = 10`. This gives a relative error bound of
+/// `100 / 2^10 = 0.09765625%`.
 ///
 /// ## Max Value Power
 /// `max_value_power` should be the closest power of 2 that is larger than the
