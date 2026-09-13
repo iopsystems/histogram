@@ -60,6 +60,21 @@ macro_rules! define_sparse_histogram {
                 (self.config, self.index, self.count)
             }
 
+            /// Shrinks spare capacity in the index and count vectors.
+            ///
+            /// This is an opt-in retention step, useful after construction or
+            /// merging when the histogram will be kept for a long time. Bucket
+            /// indices, counts, configuration, and query results are unchanged.
+            ///
+            /// Calls [`Vec::shrink_to_fit`] on each vector, which may reallocate
+            /// and move its contents. The allocator may retain extra capacity or
+            /// freed memory; exact capacity and a decrease in process RSS are not
+            /// guaranteed. Conversion does not perform this step automatically.
+            pub fn shrink_to_fit(&mut self) {
+                self.index.shrink_to_fit();
+                self.count.shrink_to_fit();
+            }
+
             /// Returns the bucket configuration.
             pub fn config(&self) -> Config {
                 self.config

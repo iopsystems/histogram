@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `shrink_to_fit()` on owned sparse and cumulative histograms, with both
+  `u64` and `u32` counters, to reduce spare vector capacity before retention.
 - Allocation-free `quantile_bucket()` and `quantile_buckets_into()` queries on
   owned and borrowed cumulative histograms, for both `u64` and `u32` counters.
   Batch queries preserve request order and duplicates using caller-provided storage.

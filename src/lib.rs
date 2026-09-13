@@ -102,6 +102,28 @@
 //! assert_eq!(output[0], output[2]);
 //! ```
 //!
+//! # Compacting retained snapshots
+//!
+//! Owned sparse and cumulative histograms provide an opt-in `shrink_to_fit()`
+//! method to reduce spare vector capacity after construction. It preserves
+//! observations, query results, cached means, and serialization. Compaction may
+//! reallocate/move the vectors; exact capacity and lower process RSS are not
+//! guaranteed. Conversions do not compact automatically.
+//!
+//! ```
+//! use histogram::{CumulativeROHistogram32, Histogram, SparseHistogram};
+//!
+//! let mut recorder = Histogram::new(10, 30).unwrap();
+//! recorder.increment(1000).unwrap();
+//! let mut sparse = SparseHistogram::from(&recorder);
+//! let mut cumulative = CumulativeROHistogram32::try_from(&recorder).unwrap();
+//! let mean = cumulative.mean();
+//! sparse.shrink_to_fit();
+//! cumulative.shrink_to_fit();
+//! assert_eq!(cumulative.mean(), mean);
+//! assert_eq!(cumulative.total_count(), 1);
+//! ```
+//!
 //! # Background
 //! Please see: <https://h2histogram.org>
 
