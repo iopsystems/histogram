@@ -80,6 +80,28 @@
 //!     CumulativeROHistogram32::try_from(&delta).unwrap();
 //! ```
 //!
+//! # Allocation-free analytical queries
+//!
+//! Owned and borrowed cumulative histograms support scalar bucket queries and
+//! batches into caller-provided storage, without allocating query results.
+//! Requests need not be sorted, and duplicates preserve their input positions.
+//! The existing [`SampleQuantiles`] API remains available for a result map and
+//! min/max/total metadata.
+//!
+//! ```
+//! use histogram::{Bucket, CumulativeROHistogram32, Histogram};
+//!
+//! let mut recorder = Histogram::new(7, 32).unwrap();
+//! recorder.increment(100).unwrap();
+//! let snapshot = CumulativeROHistogram32::try_from(&recorder).unwrap();
+//! let bucket = snapshot.quantile_bucket(0.99).unwrap().unwrap();
+//! assert_eq!(bucket.count(), 1);
+//!
+//! let mut output: [Option<Bucket>; 3] = std::array::from_fn(|_| None);
+//! snapshot.as_ref().quantile_buckets_into(&[0.99, 0.5, 0.99], &mut output).unwrap();
+//! assert_eq!(output[0], output[2]);
+//! ```
+//!
 //! # Background
 //! Please see: <https://h2histogram.org>
 

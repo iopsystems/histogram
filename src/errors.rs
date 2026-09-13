@@ -13,6 +13,8 @@ pub enum Error {
     InvalidPercentile,
     #[error("invalid quantile, must be in range 0.0..=1.0")]
     InvalidQuantile,
+    #[error("output buffer needs {required} slots, but only {available} are available")]
+    InsufficientOutputCapacity { required: usize, available: usize },
     #[error("the value is outside of the storable range")]
     OutOfRange,
     #[error("the histogram parameters are incompatible")]

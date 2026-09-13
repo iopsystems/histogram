@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Allocation-free `quantile_bucket()` and `quantile_buckets_into()` queries on
+  owned and borrowed cumulative histograms, for both `u64` and `u32` counters.
+  Batch queries preserve request order and duplicates using caller-provided storage.
+
 ## [1.5.0] - 2026-07-01
 
 ### Added

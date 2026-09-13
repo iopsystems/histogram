@@ -88,6 +88,37 @@ If you don't take snapshots — i.e., you query the recording histogram directly
 
 For JavaScript-frontend plotting specifically, prefer `CumulativeROHistogram32` over a hypothetical f32-backed alternative: `u32` is exact up to ~4.3B (vs f32 exact only to ~16M), and cumulative-monotonicity is structurally preserved (no rounding-induced plateau artifacts in ECDF rendering).
 
+## Allocation-free analytical queries
+
+For repeated reads of completed snapshots, the owned and borrowed cumulative
+types provide allocation-free bucket queries. Both `u64` and `u32` variants support
+these methods; construction/conversion is a separate cost.
+
+```rust
+use histogram::{Bucket, CumulativeROHistogram, Histogram};
+
+let mut recorder = Histogram::new(7, 32).unwrap();
+for value in [100, 200, 300] {
+    recorder.increment(value).unwrap();
+}
+let snapshot = CumulativeROHistogram::from(&recorder);
+let p99 = snapshot.quantile_bucket(0.99).unwrap().unwrap();
+println!("p99: {}..={}", p99.start(), p99.end());
+
+let requests = [0.99, 0.5, 0.99];
+let mut output: [Option<Bucket>; 3] = std::array::from_fn(|_| None);
+let written = snapshot.as_ref().quantile_buckets_into(&requests, &mut output).unwrap();
+assert_eq!(written, 3);
+assert_eq!(output[0], output[2]);
+```
+
+Batch requests may be unsorted and may repeat. Results preserve request order,
+and buckets include their individual counts. Empty histograms return/write `None`.
+Invalid quantiles or insufficient output capacity return an error without changing
+the output; extra output slots are left untouched. Empty requests write nothing.
+The existing `quantile()`/`quantiles()` APIs still provide a sorted result map,
+total count and min/max metadata when those are needed.
+
 ## Features
 
 - `serde` -- Enables `Serialize` and `Deserialize` for histogram types.

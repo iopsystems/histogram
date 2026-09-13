@@ -150,6 +150,39 @@ macro_rules! define_cumulative_histogram {
                 self.as_ref().quantile(quantile)
             }
 
+            /// Returns the bucket for one quantile without allocating.
+            ///
+            /// Uses the same nearest-rank and individual bucket-count semantics as
+            /// [`Self::quantile`], without constructing a map or min/max metadata.
+            /// Returns `Err(Error::InvalidQuantile)` for a value outside `0.0..=1.0`
+            /// (including NaN), and `Ok(None)` for an empty histogram.
+            pub fn quantile_bucket(&self, quantile: f64) -> Result<Option<Bucket>, Error> {
+                self.as_ref().quantile_bucket(quantile)
+            }
+
+            /// Writes quantile buckets into caller-provided storage without allocating.
+            ///
+            /// Writes one `Option<Bucket>` per request, preserving input order and
+            /// duplicates; requests do not need to be sorted. Each bucket contains
+            /// its individual count. An empty histogram writes `None` for every
+            /// request. Returns the number of slots written (`quantiles.len()`).
+            /// An empty request writes nothing and returns zero. Unused output
+            /// slots are unchanged.
+            ///
+            /// All quantiles are validated first, then output capacity is checked.
+            /// Returns `Error::InvalidQuantile` for invalid requests, or
+            /// `Error::InsufficientOutputCapacity` if the output is too short.
+            /// On either error, the entire output is unchanged, even for an empty
+            /// histogram. Valid requests use the same nearest-rank semantics as
+            /// [`Self::quantile`], including `0.0` and `1.0`.
+            pub fn quantile_buckets_into(
+                &self,
+                quantiles: &[f64],
+                output: &mut [Option<Bucket>],
+            ) -> Result<usize, Error> {
+                self.as_ref().quantile_buckets_into(quantiles, output)
+            }
+
             /// Returns a borrowed view over this histogram's storage.
             pub fn as_ref(&self) -> $ref_name<'_> {
                 $ref_name::from_parts_with_mean(self.config, &self.index, &self.count, self.mean)
@@ -500,6 +533,71 @@ macro_rules! define_cumulative_histogram {
                 <Self as SampleQuantiles>::quantile(self, quantile)
             }
 
+            /// Returns the bucket for one quantile without allocating.
+            ///
+            /// Uses the same nearest-rank and individual bucket-count semantics as
+            /// [`Self::quantile`], without constructing a map or min/max metadata.
+            /// Returns `Err(Error::InvalidQuantile)` for a value outside `0.0..=1.0`
+            /// (including NaN), and `Ok(None)` for an empty histogram.
+            pub fn quantile_bucket(&self, quantile: f64) -> Result<Option<Bucket>, Error> {
+                if !(0.0..=1.0).contains(&quantile) {
+                    return Err(Error::InvalidQuantile);
+                }
+                if self.count.last().is_none_or(|c| c.as_u128() == 0) {
+                    return Ok(None);
+                }
+                Ok(Some(self.bucket_for_quantile(quantile)))
+            }
+
+            /// Writes quantile buckets into caller-provided storage without allocating.
+            ///
+            /// Preserves request order and duplicates; unsorted input is accepted.
+            /// Writes `quantiles.len()` slots and returns that count. Each slot is
+            /// `Some(bucket)` for a populated histogram or `None` for an empty one.
+            /// An empty request writes nothing; unused output slots are unchanged.
+            /// Buckets have the same nearest-rank and individual-count semantics as
+            /// [`Self::quantile`].
+            ///
+            /// Validates all requests before checking output capacity. Returns
+            /// `Error::InvalidQuantile` or `Error::InsufficientOutputCapacity`
+            /// without modifying any output. These checks also apply when the
+            /// histogram is empty.
+            pub fn quantile_buckets_into(
+                &self,
+                quantiles: &[f64],
+                output: &mut [Option<Bucket>],
+            ) -> Result<usize, Error> {
+                if quantiles.iter().any(|q| !(0.0..=1.0).contains(q)) {
+                    return Err(Error::InvalidQuantile);
+                }
+                if output.len() < quantiles.len() {
+                    return Err(Error::InsufficientOutputCapacity {
+                        required: quantiles.len(),
+                        available: output.len(),
+                    });
+                }
+                let slots = &mut output[..quantiles.len()];
+                if self.count.last().is_none_or(|c| c.as_u128() == 0) {
+                    slots.fill(None);
+                } else {
+                    for (&q, slot) in quantiles.iter().zip(slots) {
+                        *slot = Some(self.bucket_for_quantile(q));
+                    }
+                }
+                Ok(quantiles.len())
+            }
+
+            // Caller has validated the quantile and checked that counts are nonempty.
+            fn bucket_for_quantile(&self, quantile: f64) -> Bucket {
+                let total_count = self.count.last().unwrap().as_u128();
+                let target = std::cmp::max(1u128, (quantile * total_count as f64).ceil() as u128);
+                let pos = Self::find_quantile_position(self.count, target);
+                Bucket {
+                    count: Self::individual_count(self.count, pos),
+                    range: self.config.index_to_range(self.index[pos] as usize),
+                }
+            }
+
             /// Returns the midpoint-estimated mean, or `None` if empty.
             ///
             /// Stored on the view, so this is a cheap field access like
@@ -596,20 +694,7 @@ macro_rules! define_cumulative_histogram {
                 // Find bucket for each quantile
                 let mut entries = BTreeMap::new();
                 for quantile in &sorted {
-                    let target = std::cmp::max(
-                        1u128,
-                        (quantile.as_f64() * total_count as f64).ceil() as u128,
-                    );
-
-                    let pos = Self::find_quantile_position(self.count, target);
-
-                    entries.insert(
-                        *quantile,
-                        Bucket {
-                            count: Self::individual_count(self.count, pos),
-                            range: self.config.index_to_range(self.index[pos] as usize),
-                        },
-                    );
+                    entries.insert(*quantile, self.bucket_for_quantile(quantile.as_f64()));
                 }
 
                 Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
