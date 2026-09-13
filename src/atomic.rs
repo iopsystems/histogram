@@ -8,8 +8,9 @@ macro_rules! define_atomic_histogram {
         /// A histogram that uses atomic counters for each bucket.
         ///
         /// Unlike the non-atomic variant, it cannot be used directly to report
-        /// percentiles. Instead, a snapshot must be taken which captures the
-        /// state of the histogram at a point in time.
+        /// percentiles. Instead, take a non-atomic snapshot. Buckets are observed
+        /// individually; concurrent writers can cross the snapshot boundary.
+        /// An exact histogram-wide boundary requires external writer coordination.
         pub struct $name {
             pub(crate) config: Config,
             pub(crate) buckets: Box<[$atomic]>,
@@ -60,6 +61,27 @@ macro_rules! define_atomic_histogram {
                     buckets: buckets.into(),
                 }
             }
+
+            /// Overwrites a compatible non-atomic histogram with bucket values.
+            ///
+            /// Reuses destination storage without allocating. Configurations must
+            /// match; [`Error::IncompatibleParameters`] leaves the destination unchanged.
+            /// Every bucket, including zero counts, replaces the destination count.
+            ///
+            /// Like [`Self::load`], reads buckets individually with relaxed loads.
+            /// This is not one instantaneous histogram-wide snapshot and does not
+            /// publish unrelated application data. Coordinate writers externally
+            /// when an exact reporting boundary is required.
+            pub fn load_into(&self, destination: &mut $hist) -> Result<(), Error> {
+                if self.config != destination.config {
+                    return Err(Error::IncompatibleParameters);
+                }
+                for (source, destination) in self.buckets.iter().zip(destination.buckets.iter_mut())
+                {
+                    *destination = source.load_relaxed();
+                }
+                Ok(())
+            }
         }
 
         impl std::fmt::Debug for $name {
@@ -91,6 +113,24 @@ impl AtomicHistogram {
             buckets: buckets.into(),
         }
     }
+
+    /// Captures and clears counts into compatible, existing storage without allocating.
+    ///
+    /// Overwrites every destination bucket. Configuration mismatch returns
+    /// [`Error::IncompatibleParameters`] before either histogram is changed.
+    /// Each bucket is captured and cleared by one relaxed atomic swap; concurrent
+    /// writes fall before or after that bucket's swap. There is no instantaneous
+    /// histogram-wide boundary or publication of unrelated application data.
+    /// Coordinate writers externally if an exact interval boundary is required.
+    pub fn drain_into(&self, destination: &mut Histogram) -> Result<(), Error> {
+        if self.config != destination.config {
+            return Err(Error::IncompatibleParameters);
+        }
+        for (source, destination) in self.buckets.iter().zip(destination.buckets.iter_mut()) {
+            *destination = source.swap_relaxed(0);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_has_atomic = "32")]
@@ -104,6 +144,24 @@ impl AtomicHistogram32 {
             config: self.config,
             buckets: buckets.into(),
         }
+    }
+
+    /// Captures and clears counts into compatible, existing storage without allocating.
+    ///
+    /// Overwrites every destination bucket. Configuration mismatch returns
+    /// [`Error::IncompatibleParameters`] before either histogram is changed.
+    /// Each bucket is captured and cleared by one relaxed atomic swap; concurrent
+    /// writes fall before or after that bucket's swap. There is no instantaneous
+    /// histogram-wide boundary or publication of unrelated application data.
+    /// Coordinate writers externally if an exact interval boundary is required.
+    pub fn drain_into(&self, destination: &mut Histogram32) -> Result<(), Error> {
+        if self.config != destination.config {
+            return Err(Error::IncompatibleParameters);
+        }
+        for (source, destination) in self.buckets.iter().zip(destination.buckets.iter_mut()) {
+            *destination = source.swap_relaxed(0);
+        }
+        Ok(())
     }
 }
 
