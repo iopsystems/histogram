@@ -28,7 +28,7 @@ macro_rules! define_cumulative_histogram {
         /// snapshots; they do not update a recorder or mutate the retained inputs.
         // `mean` is an `f64`, so `Eq` cannot be derived for this type.
         #[derive(Clone, Debug, PartialEq)]
-        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         pub struct $name {
             config: Config,
@@ -37,6 +37,26 @@ macro_rules! define_cumulative_histogram {
             /// Mean of all observations, estimated using bucket midpoints.
             /// `None` when the histogram is empty. Computed at construction.
             mean: Option<f64>,
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                // Use the original type name and field order on the wire.
+                #[derive(serde::Deserialize)]
+                struct $name {
+                    config: Config,
+                    index: Vec<u32>,
+                    count: Vec<$count>,
+                    // Consume the legacy cache field but recompute it from
+                    // validated counts instead of trusting serialized metadata.
+                    #[serde(rename = "mean")]
+                    _mean: Option<f64>,
+                }
+                let wire = <$name as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_parts(wire.config, wire.index, wire.count)
+                    .map_err(serde::de::Error::custom)
+            }
         }
 
         impl $name {
@@ -1518,5 +1538,76 @@ mod tests {
             SampleQuantiles::quantiles(&r, qs).unwrap(),
             SampleQuantiles::quantiles(&owned, qs).unwrap()
         );
+    }
+
+    // Construct invalid private views directly: deserialization must reject
+    // these states before they can reach the public transform APIs.
+    #[test]
+    fn malformed_borrowed_prefixes_are_rejected_before_transforming() {
+        macro_rules! check {
+            ($owned:ident, $view:ident, $count:ty) => {{
+                let config = Config::new(3, 10).unwrap();
+                let empty = $owned::from_parts(config, vec![], vec![]).unwrap();
+                for (indices, counts) in [
+                    (vec![1, 2], vec![3 as $count, 2]),
+                    (vec![1], vec![0]),
+                    (vec![2, 1], vec![1, 2]),
+                    (vec![1, 2], vec![1]),
+                ] {
+                    let input = $view {
+                        config,
+                        index: &indices,
+                        count: &counts,
+                        mean: None,
+                    };
+                    assert_eq!(
+                        input.checked_add(&empty.as_ref()),
+                        Err(Error::IncompatibleParameters)
+                    );
+                    assert_eq!(
+                        empty.as_ref().checked_add(&input),
+                        Err(Error::IncompatibleParameters)
+                    );
+                    assert_eq!(input.downsample(2), Err(Error::IncompatibleParameters));
+                }
+                let input = $view {
+                    config,
+                    index: &[config.total_buckets() as u32],
+                    count: &[1],
+                    mean: None,
+                };
+                assert_eq!(input.downsample(2), Err(Error::OutOfRange));
+                assert_eq!(input.checked_add(&empty.as_ref()), Err(Error::OutOfRange));
+            }};
+        }
+        check!(CumulativeROHistogram, CumulativeROHistogramRef, u64);
+        check!(CumulativeROHistogram32, CumulativeROHistogram32Ref, u32);
+    }
+
+    #[test]
+    fn transforms_recompute_output_means_from_counts() {
+        macro_rules! check {
+            ($owned:ident, $dense:ident) => {{
+                let mut dense = $dense::new(3, 10).unwrap();
+                for value in [17, 17, 35] {
+                    dense.increment(value).unwrap();
+                }
+                let original = $owned::from(&dense);
+                let mut view = original.as_ref();
+                view.mean = Some(123.456);
+                let empty = $owned::from_parts(dense.config(), vec![], vec![]).unwrap();
+                assert_eq!(
+                    view.checked_add(&empty.as_ref()).unwrap().mean(),
+                    original.mean()
+                );
+                assert_eq!(
+                    view.downsample(0).unwrap().mean(),
+                    Some((23.5 * 2.0 + 47.5) / 3.0)
+                );
+                assert_eq!(view.mean(), Some(123.456));
+            }};
+        }
+        check!(CumulativeROHistogram, Histogram);
+        check!(CumulativeROHistogram32, Histogram32);
     }
 }

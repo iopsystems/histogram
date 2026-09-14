@@ -7,11 +7,32 @@ macro_rules! define_histogram {
     ($name:ident, $iter:ident, $sparse:ident, $count:ty $(, #[$merge_hint:meta])?) => {
         /// A histogram that uses plain counters for each bucket.
         #[derive(Clone, Debug, PartialEq, Eq)]
-        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         pub struct $name {
             pub(crate) config: Config,
             pub(crate) buckets: Box<[$count]>,
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Self, D::Error> {
+                // Use the original type name and field order on the wire.
+                #[derive(serde::Deserialize)]
+                struct $name {
+                    config: Config,
+                    buckets: Vec<$count>,
+                }
+                let wire = <$name as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_buckets(
+                    wire.config.grouping_power(),
+                    wire.config.max_value_power(),
+                    wire.buckets,
+                )
+                .map_err(serde::de::Error::custom)
+            }
         }
 
         impl $name {

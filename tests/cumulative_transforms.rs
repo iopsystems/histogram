@@ -124,42 +124,7 @@ macro_rules! transform_tests {
 
             #[cfg(feature = "serde")]
             #[test]
-            fn malformed_borrowed_prefixes_are_rejected_before_transforming() {
-                let config = Config::new(3, 10).unwrap();
-                let empty = replay(3, 10, &[]);
-                for (indices, counts) in [
-                    (vec![1, 2], vec![3, 2]),
-                    (vec![1], vec![0]),
-                    (vec![2, 1], vec![1, 2]),
-                    (vec![1, 2], vec![1]),
-                ] {
-                    let mut encoded = serde_json::to_value(&empty).unwrap();
-                    encoded["index"] = serde_json::json!(indices);
-                    encoded["count"] = serde_json::json!(counts);
-                    let owned: $owned = serde_json::from_value(encoded).unwrap();
-                    let input = owned.as_ref();
-                    assert_eq!(
-                        input.checked_add(&empty.as_ref()),
-                        Err(Error::IncompatibleParameters)
-                    );
-                    assert_eq!(
-                        empty.as_ref().checked_add(&input),
-                        Err(Error::IncompatibleParameters)
-                    );
-                    assert_eq!(input.downsample(2), Err(Error::IncompatibleParameters));
-                }
-                let indices = [config.total_buckets() as u32];
-                let mut encoded = serde_json::to_value(&empty).unwrap();
-                encoded["index"] = serde_json::json!(indices);
-                encoded["count"] = serde_json::json!([1]);
-                let input: $owned = serde_json::from_value(encoded).unwrap();
-                assert_eq!(input.downsample(2), Err(Error::OutOfRange));
-                assert_eq!(input.checked_add(&empty), Err(Error::OutOfRange));
-            }
-
-            #[cfg(feature = "serde")]
-            #[test]
-            fn output_mean_is_recomputed_from_midpoints_not_input_cached_mean() {
+            fn transforms_use_validated_midpoint_means_after_deserialization() {
                 let original = replay(3, 10, &[17, 17, 35]);
                 let mut encoded = serde_json::to_value(&original).unwrap();
                 encoded["mean"] = serde_json::json!(123.456);
@@ -172,7 +137,7 @@ macro_rules! transform_tests {
                 );
                 let coarse = view.downsample(0).unwrap();
                 assert_eq!(coarse.mean(), Some((23.5 * 2.0 + 47.5) / 3.0));
-                assert_eq!(view.mean(), Some(123.456));
+                assert_eq!(view.mean(), original.mean());
             }
 
             #[test]
