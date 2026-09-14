@@ -70,6 +70,35 @@ derives that metadata when requested, keeping the recording path small. Use one
 batch for a report's quantiles instead of separate scans. A cumulative snapshot
 pays construction once for binary-search reads; it need not pay off for one report.
 
+## Aggregating completed dense histograms
+
+Use `Histogram::checked_sum(&[&first, &second, &third])` to combine compatible
+completed windows or per-writer histograms into a fresh owned result.
+`Histogram32::checked_sum` provides the same operation for u32 counters. Inputs
+are borrowed and remain unchanged, including on failure. Every configuration is
+validated before allocation or arithmetic; empty input returns
+`Error::IncompatibleParameters`, and one input is independently cloned.
+
+The operation clones the first histogram once, then fuses addition and overflow
+detection into one pass per remaining input. Any per-bucket overflow returns
+`Error::Overflow` and discards the private result. The sum across separate buckets
+may exceed the counter width. If a consumer needs cumulative storage, ensure that
+its total count fits before converting the merged result. Use `checked_add_assign`
+when you already have a destination whose allocation should be reused.
+
+The implementation is portable Rust with no extra CPU requirement. For deployments
+that target AVX2-capable x86 servers, the dense-sum benchmark can be built explicitly:
+
+```sh
+RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=+avx2" cargo bench --bench dense_sum
+```
+
+Run without those flags on other targets. The benchmark separates merge-only from
+merge-plus-five-quantile reporting, includes owned output construction/destruction,
+and excludes source and reference-list preparation. It covers tiny and larger
+geometries, clustered/full occupancy and 2/8/64 inputs. Compare methods within the
+same build; vectorization and performance depend on the compiler target.
+
 ## Counter Width
 
 Both counter families have the same value range and bucket precision. The limit

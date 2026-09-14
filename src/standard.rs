@@ -147,6 +147,57 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
+            /// Sums compatible histograms into one new, independently owned histogram.
+            ///
+            /// All configurations are checked before allocating or adding counts.
+            /// An empty input returns [`Error::IncompatibleParameters`] because
+            /// there is no configuration for the result. A single input is cloned.
+            /// Repeated references are allowed and count as repeated inputs.
+            ///
+            /// Returns [`Error::IncompatibleParameters`] if any configurations differ,
+            /// or [`Error::Overflow`] if any individual bucket sum exceeds the counter
+            /// limit. The total across different buckets may exceed that limit.
+            /// Inputs are never modified, including when an error is returned.
+            ///
+            /// Clones the first input once, then combines addition and overflow
+            /// detection in one pass over each remaining input's buckets. A failing
+            /// partial result is discarded. Overflow is checked after each input,
+            /// so an overflowing input is scanned to the end before returning.
+            /// For an existing destination that must retain its allocation, use
+            /// [`Self::checked_add_assign`] instead.
+            ///
+            /// ```
+            /// use histogram::Histogram;
+            ///
+            /// let mut first = Histogram::new(7, 30)?;
+            /// let mut second = Histogram::new(7, 30)?;
+            /// first.add(100, 2)?;
+            /// second.add(100, 3)?;
+            /// let combined = Histogram::checked_sum(&[&first, &second])?;
+            /// assert_eq!(combined, first.checked_add(&second)?);
+            /// # Ok::<(), histogram::Error>(())
+            /// ```
+            #[inline]
+            pub fn checked_sum(inputs: &[&Self]) -> Result<Self, Error> {
+                let first = inputs.first().ok_or(Error::IncompatibleParameters)?;
+                if inputs.iter().any(|input| input.config != first.config) {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = (*first).clone();
+                for input in &inputs[1..] {
+                    let mut overflow = false;
+                    for (dst, &src) in result.buckets.iter_mut().zip(input.buckets.iter()) {
+                        let (sum, carry) = dst.overflowing_add(src);
+                        *dst = sum;
+                        overflow |= carry;
+                    }
+                    if overflow {
+                        return Err(Error::Overflow);
+                    }
+                }
+                Ok(result)
+            }
+
             /// Adds a compatible histogram into this histogram without allocating.
             ///
             /// Configurations must match. Returns [`Error::IncompatibleParameters`]
