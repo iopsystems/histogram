@@ -1,0 +1,15 @@
+[package]
+name = "histogram-fused-merge-study"
+version = "0.1.0"
+edition = "2024"
+publish = false
+rust-version = "1.85"
+
+[workspace]
+
+[dependencies]
+histogram = { path = "../.." }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

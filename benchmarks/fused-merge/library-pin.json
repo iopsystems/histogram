@@ -1,0 +1,17 @@
+{
+  "commit": "2562b8e8cfd328a4a0ef4e7e6143841535f14b0e",
+  "sha256": {
+    "Cargo.toml": "e34152aa027d7b8b9ea915759f5da891f2e02e094d30bcc9d90718172bf763ab",
+    "src/atomic.rs": "bb4e92e90c7966dbd9c3a54f4d2ad6d6990b55d5972aa20c22c3f201575f7295",
+    "src/bucket.rs": "7e89e49663ab5ea52819686edb6d281aa973b76e296ede88d6db5bb3a8738840",
+    "src/config.rs": "343f32cacd00082eef5a1e698b57344e336a74b6908be5e623a69fa3578a2671",
+    "src/conversions.rs": "58ebd857860f6a1b6e6cc79935608fa7d91ffb5d910226ca1196078118cc7e32",
+    "src/count.rs": "82debda5252430b5782c8fded932b54cffdf3a6b088847ea11296bbb271e3f42",
+    "src/cumulative.rs": "426f3824dea80ff30c11b5d0fe523f3e3991c5c573deca359d225989da09bc3f",
+    "src/errors.rs": "d1ebc04c1653081bec941c5998c557b4ecc4d0dde4b1705a39016f6ff80a074f",
+    "src/lib.rs": "bcc44f6d30a79be5ce866a34bac5ca060dbc8741074903ac3893cd793f9f1b12",
+    "src/quantile.rs": "edf2826ced420a1e09d1e04f16b6f4273fc02b001641fff344554f4b15da9018",
+    "src/sparse.rs": "157e8dcaf7cb7fe750f3070aacb91118ffd4a15fc0c6cb9193aecb9564651aca",
+    "src/standard.rs": "607d7aa9c0aa5a39424489a214ba1d0e9f2d43a440e6f6d6ee73a21d985e1773"
+  }
+}
