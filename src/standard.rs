@@ -4,7 +4,7 @@ use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
 use crate::{Bucket, Config, Count, Error, SparseHistogram, SparseHistogram32};
 
 macro_rules! define_histogram {
-    ($name:ident, $iter:ident, $sparse:ident, $count:ty) => {
+    ($name:ident, $iter:ident, $sparse:ident, $count:ty $(, #[$merge_hint:meta])?) => {
         /// A histogram that uses plain counters for each bucket.
         #[derive(Clone, Debug, PartialEq, Eq)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -134,12 +134,29 @@ macro_rules! define_histogram {
             ///
             /// Takes two passes over the buckets: one to validate all additions,
             /// then one to apply them. Configuration and counter storage are preserved.
+            $(#[$merge_hint])?
             pub fn checked_add_assign(&mut self, other: &Self) -> Result<(), Error> {
                 if self.config != other.config {
                     return Err(Error::IncompatibleParameters);
                 }
-                for (this, other) in self.buckets.iter().zip(other.buckets.iter()) {
-                    this.checked_add(*other).ok_or(Error::Overflow)?;
+                if <$count>::BITS == 32 && self.buckets.len() >= 8 {
+                    // Reducing u32 overflow flags allows vectorized validation.
+                    // Eight counters match the observed 128-bit vector lowering;
+                    // shorter arrays avoid reduction overhead via scalar checks.
+                    let overflow = self
+                        .buckets
+                        .iter()
+                        .zip(other.buckets.iter())
+                        .fold(false, |overflow, (&a, &b)| {
+                            overflow | a.overflowing_add(b).1
+                        });
+                    if overflow {
+                        return Err(Error::Overflow);
+                    }
+                } else {
+                    for (this, other) in self.buckets.iter().zip(other.buckets.iter()) {
+                        this.checked_add(*other).ok_or(Error::Overflow)?;
+                    }
                 }
                 for (this, other) in self.buckets.iter_mut().zip(other.buckets.iter()) {
                     *this = this.wrapping_add(*other);
@@ -482,7 +499,7 @@ macro_rules! define_histogram {
 }
 
 define_histogram!(Histogram, Iter, SparseHistogram, u64);
-define_histogram!(Histogram32, Iter32, SparseHistogram32, u32);
+define_histogram!(Histogram32, Iter32, SparseHistogram32, u32, #[inline]);
 
 // Deprecated forwarding methods — only on the u64 variant to avoid proliferating
 // deprecated APIs onto the new u32 type. Mirrors the same pattern in sparse.rs.
