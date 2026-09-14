@@ -103,7 +103,7 @@ fn cached_means_are_preserved_bit_for_bit() {
 
 #[cfg(feature = "serde")]
 #[test]
-fn compaction_does_not_recompute_a_deserialized_cached_mean() {
+fn compaction_preserves_the_validated_deserialized_mean() {
     let mut dense = histogram::Histogram::new(7, 20).unwrap();
     dense.increment(1000).unwrap();
     macro_rules! check {
@@ -111,8 +111,10 @@ fn compaction_does_not_recompute_a_deserialized_cached_mean() {
             let mut encoded = serde_json::to_value($snapshot).unwrap();
             encoded["mean"] = serde_json::json!(123.456);
             let mut h: $ty = serde_json::from_value(encoded).unwrap();
+            // At gp7, the bucket containing 1000 spans 1000..=1003.
+            assert_eq!(h.mean(), Some(1001.5));
             h.shrink_to_fit();
-            assert_eq!(h.mean().unwrap().to_bits(), 123.456f64.to_bits());
+            assert_eq!(h.mean(), Some(1001.5));
         }};
     }
     check!(

@@ -61,8 +61,9 @@ use serde::{Deserialize, Serialize};
 /// # Constraints:
 /// * `max_value_power` must be in the range `0..=64`
 /// * `max_value_power` must be greater than `grouping_power`
+/// * The total bucket count must fit in `u32`; larger geometries return [`Error::Overflow`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Config {
     max: u64,
@@ -73,6 +74,44 @@ pub struct Config {
     lower_bin_count: u32,
     upper_bin_divisions: u32,
     upper_bin_count: u32,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Preserve the original struct name, field names, and field order for
+        // both map-based and sequence-based serialization formats.
+        #[derive(Deserialize)]
+        struct Config {
+            max: u64,
+            grouping_power: u8,
+            max_value_power: u8,
+            cutoff_power: u8,
+            cutoff_value: u64,
+            lower_bin_count: u32,
+            upper_bin_divisions: u32,
+            upper_bin_count: u32,
+        }
+        let wire = Config::deserialize(deserializer)?;
+        let expected = Self::new(wire.grouping_power, wire.max_value_power)
+            .map_err(serde::de::Error::custom)?;
+        let decoded = Self {
+            max: wire.max,
+            grouping_power: wire.grouping_power,
+            max_value_power: wire.max_value_power,
+            cutoff_power: wire.cutoff_power,
+            cutoff_value: wire.cutoff_value,
+            lower_bin_count: wire.lower_bin_count,
+            upper_bin_divisions: wire.upper_bin_divisions,
+            upper_bin_count: wire.upper_bin_count,
+        };
+        if decoded != expected {
+            return Err(serde::de::Error::custom(
+                "serialized config has inconsistent derived fields",
+            ));
+        }
+        Ok(expected)
+    }
 }
 
 impl Config {
@@ -88,6 +127,18 @@ impl Config {
         // check that the other parameters make sense together
         if grouping_power >= max_value_power {
             return Err(Error::MaxPowerTooLow);
+        }
+
+        // Bucket indices and the total bucket count use u32. Check the full
+        // geometry before the shifts, products, or narrowing conversions below.
+        let Some(upper_bin_divisions) = 1_u32.checked_shl(grouping_power as u32) else {
+            return Err(Error::Overflow);
+        };
+        if upper_bin_divisions
+            .checked_mul((max_value_power - grouping_power + 1) as u32)
+            .is_none()
+        {
+            return Err(Error::Overflow);
         }
 
         // the cutoff is the point at which the linear range divisions and the
@@ -107,7 +158,6 @@ impl Config {
         // always fit in a u8
         let cutoff_power = grouping_power + 1;
         let cutoff_value = 2_u64.pow(cutoff_power as u32);
-        let upper_bin_divisions = 2_u32.pow(grouping_power as u32);
 
         let max = if max_value_power == 64 {
             u64::MAX

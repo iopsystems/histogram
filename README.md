@@ -248,6 +248,12 @@ partially overlapping windows can grow the output and change the tradeoff.
 - `serde` -- Enables `Serialize` and `Deserialize` for histogram types.
 - `schemars` -- Enables JSON Schema generation (implies `serde`).
 
+With `serde`, decoding validates the configuration and storage invariants before
+returning a histogram. Valid serialized field names, order, and binary layout are
+preserved. Cumulative snapshots recompute their cached mean from validated counts
+instead of trusting serialized metadata. These checks run during decoding and do
+not change the recording path.
+
 ## Documentation
 
 - [API Documentation](https://docs.rs/histogram)

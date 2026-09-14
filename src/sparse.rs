@@ -12,12 +12,28 @@ macro_rules! define_sparse_histogram {
         /// count[i])` where `index[i]` is the bucket index and `count[i]`
         /// is its count, in ascending index order.
         #[derive(Clone, Debug, PartialEq, Eq)]
-        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
         #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
         pub struct $name {
             pub(crate) config: Config,
             pub(crate) index: Vec<u32>,
             pub(crate) count: Vec<$count>,
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                // Use the original type name and field order on the wire.
+                #[derive(serde::Deserialize)]
+                struct $name {
+                    config: Config,
+                    index: Vec<u32>,
+                    count: Vec<$count>,
+                }
+                let wire = <$name as serde::Deserialize>::deserialize(deserializer)?;
+                Self::from_parts(wire.config, wire.index, wire.count)
+                    .map_err(serde::de::Error::custom)
+            }
         }
 
         impl $name {
