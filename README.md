@@ -86,14 +86,17 @@ may exceed the counter width. If a consumer needs cumulative storage, ensure tha
 its total count fits before converting the merged result. Use `checked_add_assign`
 when you already have a destination whose allocation should be reused.
 
-The implementation is portable Rust with no extra CPU requirement. For deployments
-that target AVX2-capable x86 servers, the dense-sum benchmark can be built explicitly:
+On x86/x86-64, `checked_sum` detects CPU and operating-system support and selects
+an AVX2 kernel automatically. Detection is outside the bucket loops. Other machines
+use the portable kernel, including the normal compiler target on Apple Silicon.
+No `RUSTFLAGS` or higher minimum CPU requirement are needed. Both paths share the
+same checked arithmetic and input-preservation contract.
 
 ```sh
-RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=+avx2" cargo bench --bench dense_sum
+cargo bench --bench dense_sum
 ```
 
-Run without those flags on other targets. The benchmark separates merge-only from
+The benchmark separates merge-only from
 merge-plus-five-quantile reporting, includes owned output construction/destruction,
 and excludes source and reference-list preparation. It covers tiny and larger
 geometries, clustered/full occupancy and 2/8/64 inputs. Compare methods within the

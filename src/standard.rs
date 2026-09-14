@@ -166,6 +166,10 @@ macro_rules! define_histogram {
             /// For an existing destination that must retain its allocation, use
             /// [`Self::checked_add_assign`] instead.
             ///
+            /// On x86/x86-64, AVX2 is selected automatically when supported by the
+            /// CPU and operating system. Other machines use the portable kernel.
+            /// No compiler flags or higher minimum CPU requirement are needed.
+            ///
             /// ```
             /// use histogram::Histogram;
             ///
@@ -179,6 +183,26 @@ macro_rules! define_histogram {
             /// ```
             #[inline]
             pub fn checked_sum(inputs: &[&Self]) -> Result<Self, Error> {
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                if inputs.len() > 1 && std::is_x86_feature_detected!("avx2") {
+                    // SAFETY: detection checks CPU and OS support for AVX2 before
+                    // entering this target-feature function. Selection is per batch,
+                    // not per bucket or source histogram.
+                    return unsafe { Self::checked_sum_avx2(inputs) };
+                }
+                Self::checked_sum_portable(inputs)
+            }
+
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            #[target_feature(enable = "avx2")]
+            unsafe fn checked_sum_avx2(inputs: &[&Self]) -> Result<Self, Error> {
+                Self::checked_sum_portable(inputs)
+            }
+
+            // Inline the same arithmetic into each target-feature context so the
+            // compiler can vectorize it using that context's supported instructions.
+            #[inline(always)]
+            fn checked_sum_portable(inputs: &[&Self]) -> Result<Self, Error> {
                 let first = inputs.first().ok_or(Error::IncompatibleParameters)?;
                 if inputs.iter().any(|input| input.config != first.config) {
                     return Err(Error::IncompatibleParameters);
@@ -851,3 +875,7 @@ mod tests {
         assert_eq!(count, 5);
     }
 }
+
+#[cfg(test)]
+#[path = "standard_sum_tests.rs"]
+mod sum_backend_tests;
