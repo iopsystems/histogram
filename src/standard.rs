@@ -183,6 +183,10 @@ macro_rules! define_histogram {
             /// ```
             #[inline]
             pub fn checked_sum(inputs: &[&Self]) -> Result<Self, Error> {
+                // TODO: Benchmark AVX-512 against AVX2 on compatible hardware before
+                // preferring it here, including small/large merges and recording
+                // interleaved with reporting to assess frequency effects. AVX-512
+                // target_feature support requires Rust 1.89; our MSRV is 1.85.
                 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
                 if inputs.len() > 1 && std::is_x86_feature_detected!("avx2") {
                     // SAFETY: detection checks CPU and OS support for AVX2 before
