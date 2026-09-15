@@ -1,6 +1,6 @@
 [package]
 name = "histogram"
-version = "1.5.1-alpha.4"
+version = "1.5.1-alpha.5"
 edition = "2024"
 authors = ["Brian Martin <brian@iop.systems>", "Yao Yue <yao@iop.systems>"]
 license = "MIT OR Apache-2.0"
@@ -55,4 +55,8 @@ harness = false
 
 [[bench]]
 name = "report_reuse"
+harness = false
+
+[[bench]]
+name = "dense_sum"
 harness = false

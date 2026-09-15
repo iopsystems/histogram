@@ -147,6 +147,85 @@ macro_rules! define_histogram {
                 Ok(result)
             }
 
+            /// Sums compatible histograms into one new, independently owned histogram.
+            ///
+            /// All configurations are checked before allocating or adding counts.
+            /// An empty input returns [`Error::IncompatibleParameters`] because
+            /// there is no configuration for the result. A single input is cloned.
+            /// Repeated references are allowed and count as repeated inputs.
+            ///
+            /// Returns [`Error::IncompatibleParameters`] if any configurations differ,
+            /// or [`Error::Overflow`] if any individual bucket sum exceeds the counter
+            /// limit. The total across different buckets may exceed that limit.
+            /// Inputs are never modified, including when an error is returned.
+            ///
+            /// Clones the first input once, then combines addition and overflow
+            /// detection in one pass over each remaining input's buckets. A failing
+            /// partial result is discarded. Overflow is checked after each input,
+            /// so an overflowing input is scanned to the end before returning.
+            /// For an existing destination that must retain its allocation, use
+            /// [`Self::checked_add_assign`] instead.
+            ///
+            /// On x86/x86-64, AVX2 is selected automatically when supported by the
+            /// CPU and operating system. Other machines use the portable kernel.
+            /// No compiler flags or higher minimum CPU requirement are needed.
+            ///
+            /// ```
+            /// use histogram::Histogram;
+            ///
+            /// let mut first = Histogram::new(7, 30)?;
+            /// let mut second = Histogram::new(7, 30)?;
+            /// first.add(100, 2)?;
+            /// second.add(100, 3)?;
+            /// let combined = Histogram::checked_sum(&[&first, &second])?;
+            /// assert_eq!(combined, first.checked_add(&second)?);
+            /// # Ok::<(), histogram::Error>(())
+            /// ```
+            #[inline]
+            pub fn checked_sum(inputs: &[&Self]) -> Result<Self, Error> {
+                // TODO: Benchmark AVX-512 against AVX2 on compatible hardware before
+                // preferring it here, including small/large merges and recording
+                // interleaved with reporting to assess frequency effects. AVX-512
+                // target_feature support requires Rust 1.89; our MSRV is 1.85.
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                if inputs.len() > 1 && std::is_x86_feature_detected!("avx2") {
+                    // SAFETY: detection checks CPU and OS support for AVX2 before
+                    // entering this target-feature function. Selection is per batch,
+                    // not per bucket or source histogram.
+                    return unsafe { Self::checked_sum_avx2(inputs) };
+                }
+                Self::checked_sum_portable(inputs)
+            }
+
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            #[target_feature(enable = "avx2")]
+            unsafe fn checked_sum_avx2(inputs: &[&Self]) -> Result<Self, Error> {
+                Self::checked_sum_portable(inputs)
+            }
+
+            // Inline the same arithmetic into each target-feature context so the
+            // compiler can vectorize it using that context's supported instructions.
+            #[inline(always)]
+            fn checked_sum_portable(inputs: &[&Self]) -> Result<Self, Error> {
+                let first = inputs.first().ok_or(Error::IncompatibleParameters)?;
+                if inputs.iter().any(|input| input.config != first.config) {
+                    return Err(Error::IncompatibleParameters);
+                }
+                let mut result = (*first).clone();
+                for input in &inputs[1..] {
+                    let mut overflow = false;
+                    for (dst, &src) in result.buckets.iter_mut().zip(input.buckets.iter()) {
+                        let (sum, carry) = dst.overflowing_add(src);
+                        *dst = sum;
+                        overflow |= carry;
+                    }
+                    if overflow {
+                        return Err(Error::Overflow);
+                    }
+                }
+                Ok(result)
+            }
+
             /// Adds a compatible histogram into this histogram without allocating.
             ///
             /// Configurations must match. Returns [`Error::IncompatibleParameters`]
@@ -800,3 +879,7 @@ mod tests {
         assert_eq!(count, 5);
     }
 }
+
+#[cfg(test)]
+#[path = "standard_sum_tests.rs"]
+mod sum_backend_tests;
