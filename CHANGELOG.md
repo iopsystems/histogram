@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-15
+
 ### Added
 
+- `checked_sum()` on `Histogram` and `Histogram32` aggregates a batch of
+  completed windows or per-writer histograms into one fresh owned result. Every
+  configuration is validated before allocation; addition and per-bucket overflow
+  detection are fused into one pass per source, and a failing private result is
+  discarded. On x86 an AVX2 specialization is selected at runtime after the
+  CPU feature check; other hosts use the portable path.
+- `checked_add_assign()` on `Histogram` and `Histogram32`: allocation-free
+  in-place merge with two-pass overflow validation and no partial mutation on
+  failure. The `u32` validation pass reduces per-bucket overflow flags so large
+  arrays can vectorize.
+- `reset()` on `Histogram` and `Histogram32` clears every bucket in place while
+  preserving configuration and the existing allocation.
+- `load_into()` and `drain_into()` on `AtomicHistogram` and `AtomicHistogram32`
+  fill an existing dense destination, rejecting incompatible configurations
+  before any mutation.
+- Allocation-free `quantile_bucket()` and `quantile_buckets_into()` on
+  `Histogram` and `Histogram32`. Batches preserve request order and duplicates,
+  validate before writing, and share one forward rank scan.
 - Checked addition and downsampling on owned and borrowed cumulative snapshots,
   for both counter widths. Transforms return owned output, validate input storage,
   and recompute midpoint means; addition checks combined total-count overflow.
@@ -19,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Batch queries preserve request order and duplicates using caller-provided storage.
 - `Error::InsufficientOutputCapacity` reports the required and available output
   slots when a caller-provided query buffer is too short.
+
+### Changed
+
+- Dense quantile reports find the occupied bounds first, sum only that range,
+  and skip eight-counter blocks below each requested rank. Report metadata,
+  `u128` totals, validation and rank semantics are unchanged.
+- Deserialization validates `Config` and rebuilds dense, sparse and cumulative
+  histograms through their validating constructors; cumulative means are
+  recomputed from validated counts. Serialized field names and legacy JSON and
+  bincode round trips are preserved.
+- `Config` construction rejects bucket geometries whose index or count fields
+  cannot fit `u32` before arithmetic can overflow.
 
 ## [1.5.0] - 2026-07-01
 
