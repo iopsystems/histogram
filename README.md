@@ -1,9 +1,9 @@
 # histogram
 
-A collection of histogram data structures for Rust, providing standard, atomic,
-and sparse variants. Like HDRHistogram, values are stored in quantized buckets,
-but the bucket construction and indexing algorithm are modified for fast
-increments and lookups.
+A Rust implementation of the h2histogram design, providing standard, atomic,
+and sparse histogram variants. Like HDRHistogram, values are stored in quantized
+buckets, but the bucket construction and indexing algorithm are modified for
+fast increments and lookups.
 
 ## Getting Started
 
