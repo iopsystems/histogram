@@ -33,6 +33,9 @@ pub trait Count: private::Sealed + Copy + Default + Eq + Ord + std::fmt::Debug +
 
     /// Widen to `u128` for partial-sum aggregation.
     fn as_u128(self) -> u128;
+    /// Zero-extend to `u64`. Lossless for both counter widths; used by the
+    /// chunked quantile scan so its inner sums stay in machine words.
+    fn as_u64(self) -> u64;
     /// Narrow from `u64`. Returns `None` if `v` exceeds the range of `Self`.
     fn try_from_u64(v: u64) -> Option<Self>;
 }
@@ -80,6 +83,9 @@ impl Count for u32 {
     fn as_u128(self) -> u128 {
         self as u128
     }
+    fn as_u64(self) -> u64 {
+        self as u64
+    }
     #[inline]
     fn try_from_u64(v: u64) -> Option<Self> {
         u32::try_from(v).ok()
@@ -110,6 +116,9 @@ impl Count for u64 {
     #[inline]
     fn as_u128(self) -> u128 {
         self as u128
+    }
+    fn as_u64(self) -> u64 {
+        self
     }
     #[inline]
     fn try_from_u64(v: u64) -> Option<Self> {

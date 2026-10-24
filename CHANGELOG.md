@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dense quantile reports (`quantiles()`, `quantile_bucket()`,
+  `quantile_buckets_into()` on `Histogram` and `Histogram32`) scan counters in
+  eight-wide chunks summed in `u64`, which the compiler vectorizes, and derive
+  the occupied bounds and total in one pass instead of three. A chunk whose
+  counters reach 2⁶¹ is re-summed in `u128`, so results stay exact for every
+  total. Recording is unchanged and still keeps no running totals or bounds.
+
+### Fixed
+
+- `quantiles()` clamps the nearest-rank target to the observation count. With
+  totals near 2⁶⁴ and above, floating-point rounding could request a rank past
+  the last bucket and silently drop that quantile from the result map.
+
 ## [1.6.0] - 2026-09-15
 
 ### Added
