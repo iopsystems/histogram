@@ -32,8 +32,34 @@ fn reference(counts: &[u128], q: f64) -> Option<(usize, u128)> {
 
 const QUANTILES: [f64; 9] = [0.0, 0.001, 0.25, 0.5, 0.9, 0.99, 0.999, 0.9999, 1.0];
 
+/// The allocation-free `quantile_buckets_into` must select the same buckets as
+/// the map API on the same histogram, here with the requests in reverse order.
+macro_rules! agree_into {
+    ($h:expr) => {{
+        let mut reversed = QUANTILES;
+        reversed.reverse();
+        let mut out: [Option<Bucket>; 9] = std::array::from_fn(|_| None);
+        assert_eq!($h.quantile_buckets_into(&reversed, &mut out).unwrap(), 9);
+        match $h.quantiles(&QUANTILES).unwrap() {
+            None => assert!(out.iter().all(Option::is_none)),
+            Some(map) => {
+                for (q, slot) in reversed.iter().zip(out.iter()) {
+                    let b = slot.as_ref().expect("buckets-into slot filled");
+                    let e = map.get(&histogram::Quantile::new(*q).unwrap()).unwrap();
+                    assert_eq!(
+                        (b.start(), b.end(), b.count()),
+                        (e.start(), e.end(), e.count()),
+                        "q={q}"
+                    );
+                }
+            }
+        }
+    }};
+}
+
 fn check_u64(gp: u8, counts: Vec<u64>) {
     let h = Histogram::from_buckets(gp, 30, counts.clone()).unwrap();
+    agree_into!(h);
     let wide: Vec<u128> = counts.iter().map(|&c| c as u128).collect();
     let ranges: Vec<(u64, u64)> = (&h).into_iter().map(|b| (b.start(), b.end())).collect();
     check(&h, &wide, |i| counts[i], &ranges);
@@ -41,6 +67,7 @@ fn check_u64(gp: u8, counts: Vec<u64>) {
 
 fn check_u32(gp: u8, counts: Vec<u32>) {
     let h = Histogram32::from_buckets(gp, 30, counts.clone()).unwrap();
+    agree_into!(h);
     let wide: Vec<u128> = counts.iter().map(|&c| c as u128).collect();
     let ranges: Vec<(u64, u64)> = (&h).into_iter().map(|b| (b.start(), b.end())).collect();
     check(&h, &wide, |i| counts[i] as u64, &ranges);
@@ -140,7 +167,8 @@ fn u32_counts_at_their_maximum_do_not_overflow_the_scan() {
 #[test]
 fn u64_chunks_that_overflow_u64_fall_back_to_wide_arithmetic() {
     let n = Histogram::new(7, 30).unwrap().config().total_buckets();
-    // Eight adjacent counts of 2^63 sum to 2^66: the chunk fast path must not be used.
+    // Eight adjacent counts of 2^63 sum to 2^66, past u64: the word-sized chunk
+    // sums must be discarded and the whole report taken on the wide path.
     let mut counts = vec![0u64; n];
     for c in counts.iter_mut().skip(100).take(8) {
         *c = 1u64 << 63;

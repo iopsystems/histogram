@@ -390,7 +390,7 @@ macro_rules! define_histogram {
             /// without modifying output, including for empty histograms.
             ///
             /// Derives bounds and the exact total in one chunked pass, then shares one
-            /// forward rank scan whose eight-counter steps vectorize.
+            /// forward rank scan whose 32-counter steps vectorize.
             /// Selecting requests in rank order without scratch allocation takes
             /// O(Q²) work for Q requests, in addition to O(B) bucket work. Intended
             /// for small reporting batches; cumulative snapshots suit repeated analytics.
@@ -450,10 +450,13 @@ macro_rules! define_histogram {
 
             /// Machine-word sum of one chunk: a single vectorized reduction. Exact
             /// only while every counter in the occupied range is below 2⁵⁹, which
-            /// `occupied_total` establishes once per report.
+            /// `occupied_total` establishes once per report; otherwise it wraps.
             #[inline(always)]
             fn chunk_sum(chunk: &[$count; SCAN_CHUNK]) -> u64 {
-                chunk.iter().map(|c| c.as_u64()).sum()
+                // Wrapping: the total pass computes this speculatively and discards
+                // it when the OR guard reports a wide counter, so it must not trap
+                // under overflow checks; the walk only calls it when the guard passed.
+                chunk.iter().fold(0u64, |acc, c| acc.wrapping_add(c.as_u64()))
             }
 
             /// Whether a chunk holds any observation: one OR reduction.

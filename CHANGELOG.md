@@ -11,10 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dense quantile reports (`quantiles()`, `quantile_bucket()`,
   `quantile_buckets_into()` on `Histogram` and `Histogram32`) scan counters in
-  eight-wide chunks summed in `u64`, which the compiler vectorizes, and derive
-  the occupied bounds and total in one pass instead of three. A chunk whose
-  counters reach 2⁶¹ is re-summed in `u128`, so results stay exact for every
-  total. Recording is unchanged and still keeps no running totals or bounds.
+  32-wide chunks summed in `u64`, which the compiler vectorizes, test the empty
+  ends of the array with an OR reduction instead of element by element, and
+  derive the occupied bounds and total in one pass over the occupied range. A
+  lane-wise OR accumulated in that pass decides once per report whether any
+  counter is at or above 2⁵⁹; only then is the occupied range re-summed in
+  `u128` and the rank walk widened per counter, so results stay exact for
+  every total. Recording is unchanged and still keeps no running totals or
+  bounds.
 
 ### Fixed
 
