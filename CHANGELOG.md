@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-10-23
+
 ### Changed
 
 - Dense quantile reports (`quantiles()`, `quantile_bucket()`,
