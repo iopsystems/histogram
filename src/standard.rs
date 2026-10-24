@@ -3,6 +3,20 @@ use std::collections::BTreeMap;
 use crate::quantile::{Quantile, QuantilesResult, SampleQuantiles};
 use crate::{Bucket, Config, Count, Error, SparseHistogram, SparseHistogram32};
 
+/// Counters per quantile-scan step: four AVX2 lanes of `u64`, so one
+/// horizontal reduction serves 32 counters instead of 8.
+const SCAN_CHUNK: usize = 32;
+/// What one report's bounds-and-total pass established.
+#[derive(Clone, Copy)]
+struct Scan {
+    min_idx: usize,
+    max_idx: usize,
+    total: u128,
+    /// Some counter in the occupied range is at or above 2⁵⁹: word-sized chunk
+    /// sums are not trusted and every counter is widened.
+    wide: bool,
+}
+
 macro_rules! define_histogram {
     ($name:ident, $iter:ident, $sparse:ident, $count:ty $(, #[$merge_hint:meta])?) => {
         /// A histogram that uses plain counters for each bucket.
@@ -375,7 +389,8 @@ macro_rules! define_histogram {
             /// [`Error::InvalidQuantile`] or [`Error::InsufficientOutputCapacity`]
             /// without modifying output, including for empty histograms.
             ///
-            /// Derives bounds and a widened total, then shares one forward rank scan.
+            /// Derives bounds and the exact total in one chunked pass, then shares one
+            /// forward rank scan whose 32-counter steps vectorize.
             /// Selecting requests in rank order without scratch allocation takes
             /// O(Q²) work for Q requests, in addition to O(B) bucket work. Intended
             /// for small reporting batches; cumulative snapshots suit repeated analytics.
@@ -398,24 +413,12 @@ macro_rules! define_histogram {
                 if quantiles.is_empty() {
                     return Ok(0);
                 }
-                let Some(min_idx) = self
-                    .buckets
-                    .iter()
-                    .position(|c| *c != <$count as Count>::ZERO)
-                else {
+                let Some(scan) = self.occupied_total() else {
                     return Ok(quantiles.len());
                 };
-                let max_idx = self
-                    .buckets
-                    .iter()
-                    .rposition(|c| *c != <$count as Count>::ZERO)
-                    .unwrap();
-                let total: u128 = self.buckets[min_idx..=max_idx]
-                    .iter()
-                    .map(|c| c.as_u128())
-                    .sum();
-                let mut index = min_idx;
-                let mut partial = self.buckets[index].as_u128();
+                let (max_idx, total) = (scan.max_idx, scan.total);
+                let mut next = scan.min_idx;
+                let mut partial = 0u128;
                 // Unfilled slots identify requests still to process. No per-record
                 // state, temporary vectors, or changes to the input are needed.
                 while let Some(q) = quantiles
@@ -425,26 +428,13 @@ macro_rules! define_histogram {
                     .map(|(&q, _)| q)
                     .min_by(f64::total_cmp)
                 {
-                    let target = ((q * total as f64).ceil() as u128).clamp(1, total);
                     if q == 1.0 {
-                        index = max_idx;
+                        next = max_idx + 1;
+                        partial = total;
                     } else {
-                        while partial < target && index + 8 <= max_idx {
-                            let subtotal: u128 = self.buckets[index + 1..index + 9]
-                                .iter()
-                                .map(|c| c.as_u128())
-                                .sum();
-                            if partial + subtotal >= target {
-                                break;
-                            }
-                            partial += subtotal;
-                            index += 8;
-                        }
-                        while partial < target && index < max_idx {
-                            index += 1;
-                            partial += self.buckets[index].as_u128();
-                        }
+                        self.advance_to_rank(&scan, &mut next, &mut partial, Self::rank_target(q, total));
                     }
+                    let index = next - 1;
                     let bucket = Bucket {
                         count: self.buckets[index].as_u128() as u64,
                         range: self.config.index_to_range(index),
@@ -457,6 +447,114 @@ macro_rules! define_histogram {
                 }
                 Ok(quantiles.len())
             }
+
+            /// Machine-word sum of one chunk: a single vectorized reduction. Exact
+            /// only while every counter in the occupied range is below 2⁵⁹, which
+            /// `occupied_total` establishes once per report; otherwise it wraps.
+            #[inline(always)]
+            fn chunk_sum(chunk: &[$count; SCAN_CHUNK]) -> u64 {
+                // Wrapping: the total pass computes this speculatively and discards
+                // it when the OR guard reports a wide counter, so it must not trap
+                // under overflow checks; the walk only calls it when the guard passed.
+                chunk.iter().fold(0u64, |acc, c| acc.wrapping_add(c.as_u64()))
+            }
+
+            /// Whether a chunk holds any observation: one OR reduction.
+            #[inline(always)]
+            fn chunk_occupied(chunk: &[$count; SCAN_CHUNK]) -> bool {
+                chunk.iter().fold(0u64, |acc, c| acc | c.as_u64()) != 0
+            }
+
+            /// First and last occupied bucket, the exact total, and whether any
+            /// counter in the occupied range is at or above 2⁵⁹ (`wide`). Empty
+            /// chunks outside the occupied range are only tested for occupancy.
+            /// The total pass sums chunks in `u64` while OR-ing every counter into
+            /// four lane accumulators; one reduction of those at the end decides
+            /// whether the word-sized sums were exact, and the rare wide case is
+            /// re-summed in `u128`. Returns `None` when empty. Recording keeps no
+            /// totals or bounds, so a report derives them here.
+            fn occupied_total(&self) -> Option<Scan> {
+                let buckets: &[$count] = &self.buckets;
+                let zero = <$count as Count>::ZERO;
+                let n = buckets.len();
+                let mut lo = 0;
+                while lo + SCAN_CHUNK <= n {
+                    let chunk: &[$count; SCAN_CHUNK] = buckets[lo..lo + SCAN_CHUNK].try_into().unwrap();
+                    if Self::chunk_occupied(chunk) {
+                        break;
+                    }
+                    lo += SCAN_CHUNK;
+                }
+                let min_idx = lo + buckets[lo..].iter().position(|c| *c != zero)?;
+                let mut hi = n;
+                while hi >= min_idx + SCAN_CHUNK {
+                    let chunk: &[$count; SCAN_CHUNK] = buckets[hi - SCAN_CHUNK..hi].try_into().unwrap();
+                    if Self::chunk_occupied(chunk) {
+                        break;
+                    }
+                    hi -= SCAN_CHUNK;
+                }
+                let max_idx = buckets[..hi].iter().rposition(|c| *c != zero).unwrap();
+                let occupied = &buckets[min_idx..=max_idx];
+                let chunks = occupied.chunks_exact(SCAN_CHUNK);
+                // Four OR lanes fit one vector register, so the guard adds one
+                // vector OR per four counters and no per-chunk reduction.
+                let mut high = [0u64; 4];
+                let mut total: u128 = chunks.remainder().iter().map(|c| c.as_u128()).sum();
+                for c in chunks.remainder() {
+                    high[0] |= c.as_u64();
+                }
+                for chunk in chunks {
+                    let chunk: &[$count; SCAN_CHUNK] = chunk.try_into().unwrap();
+                    for group in chunk.chunks_exact(4) {
+                        for (acc, c) in high.iter_mut().zip(group.iter()) {
+                            *acc |= c.as_u64();
+                        }
+                    }
+                    total += Self::chunk_sum(chunk) as u128;
+                }
+                let wide = high.iter().fold(0u64, |acc, h| acc | h) >> 59 != 0;
+                if wide {
+                    total = occupied.iter().map(|c| c.as_u128()).sum();
+                }
+                Some(Scan { min_idx, max_idx, total, wide })
+            }
+
+            /// Advances the exclusive prefix (`next`, `partial`: the sum of
+            /// `buckets[min_idx..next]`) until the inclusive prefix reaches
+            /// `target`, leaving `next - 1` on the selected bucket. Chunks that
+            /// cannot contain the target are skipped with word-sized sums; in the
+            /// wide case every counter is widened individually.
+            #[inline]
+            fn advance_to_rank(&self, scan: &Scan, next: &mut usize, partial: &mut u128, target: u128) {
+                let buckets: &[$count] = &self.buckets;
+                let (mut i, mut acc) = (*next, *partial);
+                if !scan.wide {
+                    while acc < target && i + SCAN_CHUNK <= scan.max_idx + 1 {
+                        let chunk: &[$count; SCAN_CHUNK] = buckets[i..i + SCAN_CHUNK].try_into().unwrap();
+                        let subtotal = Self::chunk_sum(chunk) as u128;
+                        if acc + subtotal >= target {
+                            break;
+                        }
+                        acc += subtotal;
+                        i += SCAN_CHUNK;
+                    }
+                }
+                while acc < target && i <= scan.max_idx {
+                    acc += buckets[i].as_u128();
+                    i += 1;
+                }
+                *next = i;
+                *partial = acc;
+            }
+
+            /// Nearest rank for `quantile` over `total` observations, clamped to the
+            /// observation count so floating-point rounding at very large totals
+            /// cannot request a rank past the last bucket.
+            #[inline]
+            fn rank_target(quantile: f64, total: u128) -> u128 {
+                ((quantile * total as f64).ceil() as u128).clamp(1, total)
+            }
         }
 
         impl SampleQuantiles for $name {
@@ -466,24 +564,10 @@ macro_rules! define_histogram {
                         return Err(Error::InvalidQuantile);
                     }
                 }
-                // Locate the occupied range before summing so empty tails are
-                // visited only by the bounds searches, not again for the total.
-                let Some(min_idx) = self
-                    .buckets
-                    .iter()
-                    .position(|c| *c != <$count as Count>::ZERO)
-                else {
+                let Some(scan) = self.occupied_total() else {
                     return Ok(None);
                 };
-                let max_idx = self
-                    .buckets
-                    .iter()
-                    .rposition(|c| *c != <$count as Count>::ZERO)
-                    .unwrap();
-                let total_count: u128 = self.buckets[min_idx..=max_idx]
-                    .iter()
-                    .map(|v| v.as_u128())
-                    .sum();
+                let (min_idx, max_idx, total_count) = (scan.min_idx, scan.max_idx, scan.total);
                 let mut sorted: Vec<Quantile> = quantiles
                     .iter()
                     .map(|&q| Quantile::new(q).unwrap())
@@ -491,53 +575,24 @@ macro_rules! define_histogram {
                 sorted.sort();
                 sorted.dedup();
 
-                let min = Bucket {
-                    count: self.buckets[min_idx].as_u128() as u64,
-                    range: self.config.index_to_range(min_idx),
+                let bucket_at = |index: usize| Bucket {
+                    count: self.buckets[index].as_u128() as u64,
+                    range: self.config.index_to_range(index),
                 };
-                let max = Bucket {
-                    count: self.buckets[max_idx].as_u128() as u64,
-                    range: self.config.index_to_range(max_idx),
-                };
+                let min = bucket_at(min_idx);
+                let max = bucket_at(max_idx);
 
-                let mut bucket_idx = min_idx;
-                let mut partial_sum = self.buckets[bucket_idx].as_u128();
+                let mut next = min_idx;
+                let mut partial = 0u128;
                 let mut entries = BTreeMap::new();
-
                 for quantile in &sorted {
-                    let count =
-                        std::cmp::max(1, (quantile.as_f64() * total_count as f64).ceil() as u128);
-                    // Skip complete blocks whose cumulative count is below the
-                    // target. Widen before summing: even eight counters can
-                    // exceed u64. Scan the target block (or short tail) below.
-                    while partial_sum < count && bucket_idx + 8 < self.buckets.len() {
-                        let subtotal: u128 = self.buckets[bucket_idx + 1..bucket_idx + 9]
-                            .iter()
-                            .map(|c| c.as_u128())
-                            .sum();
-                        if partial_sum + subtotal >= count {
-                            break;
-                        }
-                        partial_sum += subtotal;
-                        bucket_idx += 8;
+                    if quantile.as_f64() == 1.0 {
+                        next = max_idx + 1;
+                        partial = total_count;
+                    } else {
+                        self.advance_to_rank(&scan, &mut next, &mut partial, Self::rank_target(quantile.as_f64(), total_count));
                     }
-                    loop {
-                        if partial_sum >= count {
-                            entries.insert(
-                                *quantile,
-                                Bucket {
-                                    count: self.buckets[bucket_idx].as_u128() as u64,
-                                    range: self.config.index_to_range(bucket_idx),
-                                },
-                            );
-                            break;
-                        }
-                        if bucket_idx == (self.buckets.len() - 1) {
-                            break;
-                        }
-                        bucket_idx += 1;
-                        partial_sum += self.buckets[bucket_idx].as_u128();
-                    }
+                    entries.insert(*quantile, bucket_at(next - 1));
                 }
 
                 Ok(Some(QuantilesResult::new(entries, total_count, min, max)))
