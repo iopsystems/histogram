@@ -294,6 +294,7 @@ macro_rules! define_cumulative_histogram {
         impl Iterator for $iter<'_> {
             type Item = Bucket;
 
+            #[inline]
             fn next(&mut self) -> Option<Bucket> {
                 if self.position >= self.index.len() {
                     return None;
@@ -336,6 +337,7 @@ macro_rules! define_cumulative_histogram {
         impl Iterator for $qr_iter<'_> {
             type Item = (Bucket, f64, f64);
 
+            #[inline]
             fn next(&mut self) -> Option<Self::Item> {
                 if self.position >= self.index.len() {
                     return None;
