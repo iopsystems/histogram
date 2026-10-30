@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-10-30
+
 ### Changed
 
 - `increment()` and `add()` on `AtomicHistogram`, `AtomicHistogram32`,
@@ -15,10 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Config::{grouping_power, max_value_power, total_buckets}`, and `next()` on
   the dense, sparse and cumulative bucket iterators and the cumulative
   quantile-range iterator are `#[inline]`, so a caller in another crate can
-  inline them, and the index computations they call, without LTO. `increment()`, `add()` and the iterators' `next()`
-  call other non-inline functions, so rustc compiled them as out-of-line calls
-  from another crate; the small getters were already inlined as leaf
-  functions and are annotated for consistency.
+  inline them, and the index computations they call, without LTO.
+  `increment()`, `add()` and the iterators' `next()` call other non-inline
+  functions, so rustc compiled them as out-of-line calls from another crate;
+  the small getters were already inlined as leaf functions and are annotated
+  for consistency.
 
   Measured with `#[inline]` on `AtomicHistogram::{increment, add}` and the
   value-to-index computation only, from a downstream crate on a Ryzen 7 7840HS
