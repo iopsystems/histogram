@@ -95,8 +95,14 @@ impl<'de> Deserialize<'de> for Config {
         let wire = Config::deserialize(deserializer)?;
         let expected = Self::new(wire.grouping_power, wire.max_value_power)
             .map_err(serde::de::Error::custom)?;
+        // histogram 0.8.0 through 0.11.3 stored `max` as `2^max_value_power`
+        // when `max_value_power < 64`; 0.11.4 changed it to the inclusive
+        // bound `2^max_value_power - 1`. Accept that encoding as the current
+        // one so data serialized by 0.8.2 through 0.11.3 still decodes. The
+        // `< 64` check must come first: it keeps the shift in range.
+        let legacy_max = wire.max_value_power < 64 && wire.max == 1_u64 << wire.max_value_power;
         let decoded = Self {
-            max: wire.max,
+            max: if legacy_max { expected.max } else { wire.max },
             grouping_power: wire.grouping_power,
             max_value_power: wire.max_value_power,
             cutoff_power: wire.cutoff_power,

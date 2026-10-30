@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Deserialization accepts a `Config` whose `max` is `2^max_value_power`,
+  the encoding histogram 0.8.2 through 0.11.3 wrote when
+  `max_value_power < 64`, and decodes it as the current config
+  (`2^max_value_power - 1`). Since 1.6.0 such a config was rejected as
+  having inconsistent derived fields, so a histogram serialized by those
+  versions with `max_value_power < 64`, and anything containing it, failed
+  to decode. Every other inconsistent derived field is still rejected.
+
 ## [1.6.2] - 2026-10-30
 
 ### Changed

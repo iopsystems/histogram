@@ -80,7 +80,7 @@ fn config_legacy_json_and_binary_remain_compatible() {
 fn config_rejects_each_inconsistent_derived_field() {
     let valid = serde_json::to_value(legacy_config()).unwrap();
     for (field, bad) in [
-        ("max", 8),
+        ("max", 9),
         ("grouping_power", 0),
         ("max_value_power", 4),
         ("cutoff_power", 3),
@@ -92,6 +92,56 @@ fn config_rejects_each_inconsistent_derived_field() {
         let mut wire = valid.clone();
         wire[field] = json!(bad);
         assert_rejected::<Config>(&wire);
+    }
+}
+
+#[test]
+fn config_accepts_the_pre_0_11_4_max_encoding() {
+    // histogram 0.8.2 through 0.11.3 serialized `max` as `2^max_value_power`.
+    let mut wire = legacy_config();
+    wire.max = 1 << wire.max_value_power;
+    let json = serde_json::to_value(&wire).unwrap();
+    let from_json: Config = serde_json::from_value(json).unwrap();
+    let from_bincode: Config = bincode::deserialize(&bincode::serialize(&wire).unwrap()).unwrap();
+    let current = Config::new(wire.grouping_power, wire.max_value_power).unwrap();
+    assert_eq!(from_json, current);
+    assert_eq!(from_bincode, current);
+
+    // It re-serializes in the current encoding.
+    assert_eq!(serde_json::to_value(from_json).unwrap()["max"], json!(7));
+
+    // A histogram carrying such a config decodes too.
+    let dense: Histogram = serde_json::from_value(
+        serde_json::to_value(LegacyDense {
+            config: wire,
+            buckets: vec![2_u64, 3, 5, 0, 0, 0].into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(dense.config(), current);
+    assert_eq!(dense.as_slice(), &[2, 3, 5, 0, 0, 0]);
+}
+
+#[test]
+fn full_range_configs_still_round_trip() {
+    // max_value_power 64 has no legacy encoding (`max` was `u64::MAX` in
+    // every version); the legacy check must not shift by 64.
+    for gp in [0, 1, 7, 20] {
+        let config = Config::new(gp, 64).unwrap();
+        let json = serde_json::to_value(config).unwrap();
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), config);
+        let bytes = bincode::serialize(&config).unwrap();
+        assert_eq!(bincode::deserialize::<Config>(&bytes).unwrap(), config);
+    }
+}
+
+#[test]
+fn config_rejects_a_max_that_is_neither_encoding() {
+    for max in [0, 6, 9, u64::MAX] {
+        let mut wire = legacy_config();
+        wire.max = max;
+        assert_rejected::<Config>(&serde_json::to_value(&wire).unwrap());
     }
 }
 
