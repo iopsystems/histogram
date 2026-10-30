@@ -84,12 +84,14 @@ macro_rules! define_histogram {
 
             /// Increment the counter for the bucket corresponding to `value` by one.
             /// Uses wrapping arithmetic on overflow.
+            #[inline]
             pub fn increment(&mut self, value: u64) -> Result<(), Error> {
                 self.add(value, <$count as Count>::ONE)
             }
 
             /// Add `count` to the bucket containing `value`. Uses wrapping
             /// arithmetic on overflow.
+            #[inline]
             pub fn add(&mut self, value: u64, count: $count) -> Result<(), Error> {
                 let index = self.config.value_to_index(value)?;
                 self.buckets[index] = self.buckets[index].wrapping_add(count);
@@ -107,11 +109,13 @@ macro_rules! define_histogram {
             }
 
             /// Get a reference to the raw counters.
+            #[inline]
             pub fn as_slice(&self) -> &[$count] {
                 &self.buckets
             }
 
             /// Get a mutable reference to the raw counters.
+            #[inline]
             pub fn as_mut_slice(&mut self) -> &mut [$count] {
                 &mut self.buckets
             }
@@ -618,6 +622,7 @@ macro_rules! define_histogram {
 
         impl Iterator for $iter<'_> {
             type Item = Bucket;
+            #[inline]
             fn next(&mut self) -> Option<Bucket> {
                 if self.index >= self.histogram.buckets.len() {
                     return None;

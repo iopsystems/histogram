@@ -386,6 +386,7 @@ macro_rules! define_sparse_histogram {
         impl Iterator for $iter<'_> {
             type Item = Bucket;
 
+            #[inline]
             fn next(&mut self) -> Option<<Self as std::iter::Iterator>::Item> {
                 if self.index >= self.sparse_index.len() {
                     return None;

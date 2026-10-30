@@ -37,11 +37,13 @@ macro_rules! define_atomic_histogram {
             }
 
             /// Increment the bucket that contains `value` by one.
+            #[inline]
             pub fn increment(&self, value: u64) -> Result<(), Error> {
                 self.add(value, <$count as Count>::ONE)
             }
 
             /// Add `count` to the bucket that contains `value`.
+            #[inline]
             pub fn add(&self, value: u64, count: $count) -> Result<(), Error> {
                 let index = self.config.value_to_index(value)?;
                 self.buckets[index].fetch_add_relaxed(count);

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `increment()` and `add()` on `AtomicHistogram`, `AtomicHistogram32`,
+  `Histogram` and `Histogram32`, the value-to-index and index-to-range
+  computations, `as_slice()` and `as_mut_slice()`, the `Bucket` getters,
+  `Config::{grouping_power, max_value_power, total_buckets}`, and `next()` on
+  the dense, sparse and cumulative bucket iterators and the cumulative
+  quantile-range iterator are `#[inline]`, so a caller in another crate can
+  inline them, and the index computations they call, without LTO. `increment()`, `add()` and the iterators' `next()`
+  call other non-inline functions, so rustc compiled them as out-of-line calls
+  from another crate; the small getters were already inlined as leaf
+  functions and are annotated for consistency.
+
+  Measured with `#[inline]` on `AtomicHistogram::{increment, add}` and the
+  value-to-index computation only, from a downstream crate on a Ryzen 7 7840HS
+  without LTO, median of 5 interleaved 2-second runs per arm, values in
+  million recorded values per second per thread:
+
+  | Path | Threads | 1.6.1 | 1.6.1 + inline recording path | 1.6.1 with fat LTO |
+  | --- | --- | --- | --- | --- |
+  | one `AtomicHistogram` per thread, through an inline wrapper | 1 | 406 | 555 | 561 |
+  | one `AtomicHistogram` per thread, through an inline wrapper | 8 | 345 | 486 | 483 |
+  | one shared `AtomicHistogram`, through metriken | 1 | 398 | 497 | 600 |
+  | one shared `AtomicHistogram`, through metriken | 8 | 37 | 36 | 36 |
+
+  The shared-histogram path went through metriken's `AtomicHistogram`
+  wrapper, whose own `increment()` was an out-of-line call that the patch does
+  not touch. LTO also removed that call, which we take to explain the
+  difference between the last two columns: the per-thread path, whose wrapper
+  is inline, matches LTO. With eight threads on one histogram, inlining
+  changed nothing; we attribute that to contention on the shared cache line.
+
 ## [1.6.1] - 2026-10-23
 
 ### Changed

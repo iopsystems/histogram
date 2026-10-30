@@ -181,11 +181,13 @@ impl Config {
     }
 
     /// Returns the grouping power that was used to create this configuration.
+    #[inline]
     pub const fn grouping_power(&self) -> u8 {
         self.grouping_power
     }
 
     /// Returns the max value power that was used to create this configuration.
+    #[inline]
     pub const fn max_value_power(&self) -> u8 {
         self.max_value_power
     }
@@ -202,12 +204,14 @@ impl Config {
     }
 
     /// Return the total number of buckets needed for this config.
+    #[inline]
     pub const fn total_buckets(&self) -> usize {
         (self.lower_bin_count + self.upper_bin_count) as usize
     }
 
     /// Converts a value to a bucket index. Returns an error if the value is
     /// outside of the range for the config.
+    #[inline]
     pub(crate) fn value_to_index(&self, value: u64) -> Result<usize, Error> {
         if value < self.cutoff_value {
             return Ok(value as usize);
@@ -225,6 +229,7 @@ impl Config {
     }
 
     /// Convert a bucket index to a lower bound.
+    #[inline]
     pub(crate) fn index_to_lower_bound(&self, index: usize) -> u64 {
         let g = index as u64 >> self.grouping_power;
         let h = index as u64 - g * (1 << self.grouping_power);
@@ -237,6 +242,7 @@ impl Config {
     }
 
     /// Convert a bucket index to a upper inclusive bound.
+    #[inline]
     pub(crate) fn index_to_upper_bound(&self, index: usize) -> u64 {
         if index as u32 == self.lower_bin_count + self.upper_bin_count - 1 {
             return self.max;
@@ -252,6 +258,7 @@ impl Config {
     }
 
     /// Convert a bucket index to a range.
+    #[inline]
     pub(crate) fn index_to_range(&self, index: usize) -> RangeInclusive<u64> {
         self.index_to_lower_bound(index)..=self.index_to_upper_bound(index)
     }
