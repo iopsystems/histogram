@@ -10,9 +10,6 @@ macro_rules! benchmark {
         });
         group.finish();
 
-        // A stream that crosses the linear and logarithmic regions in an order
-        // the branch predictor cannot learn, so the cost of the region test and
-        // the range check shows up instead of being predicted away.
         let mut group = $c.benchmark_group(concat!($name, "/stream"));
         group.throughput(Throughput::Elements(STREAM_LEN as u64));
         let stream = mixed_stream();
@@ -29,11 +26,10 @@ macro_rules! benchmark {
 
 const STREAM_LEN: usize = 4096;
 
-/// Values spanning 0..2^40 from a fixed-seed LCG. The exponent is drawn from
-/// `bits % 41` with `bits` in 0..64, so exponents 0..=22 are slightly more
-/// likely than 23..=40; for this seed 1,184 of the 4,096 values (29%) fall in
-/// the linear region of a gp7 histogram and the rest spread across its
-/// logarithmic buckets, in an order the branch predictor cannot learn.
+/// Fixed-seed LCG stream spanning 0..2^40 to exercise both indexing regions.
+/// The modulo mapping favors shifts 0..=22 over 23..=40.
+/// For gp7, 1,184 of the 4,096 values (29%) fall in the linear region;
+/// the rest fall in logarithmic buckets.
 fn mixed_stream() -> Vec<u64> {
     let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
     (0..STREAM_LEN)
@@ -41,8 +37,8 @@ fn mixed_stream() -> Vec<u64> {
             seed = seed
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
-            let bits = (seed >> 58) as u32; // 0..64
-            let shift = bits % 41; // 0..=40
+            let bits = (seed >> 58) as u32;
+            let shift = bits % 41;
             let mantissa = seed >> 20;
             (mantissa % (1u64 << shift.max(1))) | if shift == 0 { 0 } else { 1u64 << (shift - 1) }
         })

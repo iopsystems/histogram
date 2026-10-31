@@ -45,8 +45,8 @@ macro_rules! define_atomic_histogram {
             /// Add `count` to the bucket that contains `value`.
             #[inline]
             pub fn add(&self, value: u64, count: $count) -> Result<(), Error> {
-                // As in the non-atomic histogram: the slice lookup is the range
-                // check, see `Config::bucket_index`.
+                // The slice must have exactly `config.total_buckets()` entries for
+                // this lookup to enforce the value range; see `Config::bucket_index`.
                 let index = self.config.bucket_index(value);
                 let bucket = usize::try_from(index)
                     .ok()

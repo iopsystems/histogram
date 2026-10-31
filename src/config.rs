@@ -217,27 +217,24 @@ impl Config {
 
     /// The bucket index of `value` with no range check.
     ///
-    /// Values below the cutoff index themselves. Above it, with `s` the number
-    /// of low bits a value's bucket discards, which is the value's bit length
-    /// minus `grouping_power + 1`, the index is
-    /// `(s << grouping_power) + (value >> s)`: each power of two adds one
-    /// block of 2^`grouping_power` buckets. This is the usual
-    /// lower-bins plus log-bin times divisions plus offset formula with its
-    /// terms cancelled, so the hot path is a leading-zero count, two shifts and
-    /// an add, with one field read.
+    /// Below the cutoff the index is the value. Above it, with `s` the number
+    /// of low bits a bucket discards (the value's bit length minus
+    /// `grouping_power + 1`), the index is `(s << grouping_power) + (value >> s)`:
+    /// one block of 2^`grouping_power` buckets per further power of two.
     ///
-    /// The result is monotone in `value`, and for every value above `max` it
-    /// is at least [`total_buckets`](Self::total_buckets), so a bounds-checked
-    /// lookup on counter storage of exactly that length doubles as the range
-    /// check. Nothing wraps: `s` is at most 63 and `grouping_power` at most 31
-    /// (its divisions fit a `u32`), so every result is below 2^37. The `| 1`
-    /// changes nothing on this side of the cutoff (the value is at least 2) but
-    /// lets the compiler drop the zero guard on the leading-zero count.
+    /// The result is monotone in `value` and fits in `u64` (`s` is at most 63
+    /// and `grouping_power` at most 31), even above `max`.
+    /// Values above `max` map to indices at or beyond
+    /// [`total_buckets`](Self::total_buckets).
+    /// Callers using a slice lookup as the range check must use storage of
+    /// exactly that length.
     #[inline]
     pub(crate) fn bucket_index(&self, value: u64) -> u64 {
         if value < self.cutoff_value {
             return value;
         }
+        // Setting the low bit preserves the leading-zero count here and lets
+        // the compiler treat the operand as nonzero.
         let s = (63 - (value | 1).leading_zeros()) - self.grouping_power as u32;
         ((s as u64) << self.grouping_power) + (value >> s)
     }
@@ -315,8 +312,7 @@ mod tests {
         assert_eq!(config.total_buckets(), 12);
     }
 
-    /// The formula `bucket_index` replaced, kept as the oracle: an explicit
-    /// linear-region branch and an explicit range check.
+    /// Indexing oracle with explicit log-bin offsets and a separate maximum check.
     fn reference_index(config: &Config, value: u64) -> Option<usize> {
         if value < config.cutoff_value {
             return Some(value as usize);
@@ -334,9 +330,8 @@ mod tests {
     }
 
     #[test]
-    // The branch-free index agrees with the reference on every power-of-two
-    // boundary of every geometry, and lands at or past the end for every
-    // value above the maximum.
+    // Sampled values check index agreement, monotonicity, and rejection above
+    // the maximum for valid geometries with grouping powers 0..=15.
     fn bucket_index_matches_reference_on_all_boundaries() {
         for max_value_power in 1..=64u8 {
             for grouping_power in 0..max_value_power.min(16) {
