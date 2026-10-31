@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Recording computes the logarithmic bucket index as
+  `(s << grouping_power) + (value >> s)`, the cancelled form of the
+  lower-bins plus log-bin times divisions plus offset formula, and lets the
+  counter slice's own bounds check serve as the range check. The hot path
+  loses a multiply, a subtraction, three field reads, the zero guard on the
+  leading-zero count and the explicit maximum test; results and errors are
+  unchanged. On a mixed linear/logarithmic stream, `increment` is 12% (u64)
+  to 16% (u32) faster on one x86 host; the atomic histogram is unchanged
+  because its locked add dominates.
+
 ## [1.6.3] - 2026-10-30
 
 ### Fixed

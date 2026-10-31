@@ -215,23 +215,42 @@ impl Config {
         (self.lower_bin_count + self.upper_bin_count) as usize
     }
 
+    /// The bucket index of `value` with no range check.
+    ///
+    /// Values below the cutoff index themselves. Above it, with `s` the number
+    /// of low bits a value's bucket discards, which is the value's bit length
+    /// minus `grouping_power + 1`, the index is
+    /// `(s << grouping_power) + (value >> s)`: each power of two adds one
+    /// block of 2^`grouping_power` buckets. This is the usual
+    /// lower-bins plus log-bin times divisions plus offset formula with its
+    /// terms cancelled, so the hot path is a leading-zero count, two shifts and
+    /// an add, with one field read.
+    ///
+    /// The result is monotone in `value`, and for every value above `max` it
+    /// is at least [`total_buckets`](Self::total_buckets), so a bounds-checked
+    /// lookup on counter storage of exactly that length doubles as the range
+    /// check. Nothing wraps: `s` is at most 63 and `grouping_power` at most 31
+    /// (its divisions fit a `u32`), so every result is below 2^37. The `| 1`
+    /// changes nothing on this side of the cutoff (the value is at least 2) but
+    /// lets the compiler drop the zero guard on the leading-zero count.
+    #[inline]
+    pub(crate) fn bucket_index(&self, value: u64) -> u64 {
+        if value < self.cutoff_value {
+            return value;
+        }
+        let s = (63 - (value | 1).leading_zeros()) - self.grouping_power as u32;
+        ((s as u64) << self.grouping_power) + (value >> s)
+    }
+
     /// Converts a value to a bucket index. Returns an error if the value is
     /// outside of the range for the config.
     #[inline]
     pub(crate) fn value_to_index(&self, value: u64) -> Result<usize, Error> {
-        if value < self.cutoff_value {
-            return Ok(value as usize);
-        }
-
-        if value > self.max {
+        let index = self.bucket_index(value);
+        if index >= self.total_buckets() as u64 {
             return Err(Error::OutOfRange);
         }
-
-        let power = 63 - value.leading_zeros();
-        let log_bin = power - self.cutoff_power as u32;
-        let offset = (value - (1 << power)) >> (power - self.grouping_power as u32);
-
-        Ok((self.lower_bin_count + log_bin * self.upper_bin_divisions + offset as u32) as usize)
+        Ok(index as usize)
     }
 
     /// Convert a bucket index to a lower bound.
@@ -294,6 +313,71 @@ mod tests {
 
         let config = Config::new(2, 4).unwrap();
         assert_eq!(config.total_buckets(), 12);
+    }
+
+    /// The formula `bucket_index` replaced, kept as the oracle: an explicit
+    /// linear-region branch and an explicit range check.
+    fn reference_index(config: &Config, value: u64) -> Option<usize> {
+        if value < config.cutoff_value {
+            return Some(value as usize);
+        }
+        if value > config.max {
+            return None;
+        }
+        let power = 63 - value.leading_zeros();
+        let log_bin = power - config.cutoff_power as u32;
+        let offset = (value - (1 << power)) >> (power - config.grouping_power as u32);
+        Some(
+            (config.lower_bin_count + log_bin * config.upper_bin_divisions + offset as u32)
+                as usize,
+        )
+    }
+
+    #[test]
+    // The branch-free index agrees with the reference on every power-of-two
+    // boundary of every geometry, and lands at or past the end for every
+    // value above the maximum.
+    fn bucket_index_matches_reference_on_all_boundaries() {
+        for max_value_power in 1..=64u8 {
+            for grouping_power in 0..max_value_power.min(16) {
+                let config = Config::new(grouping_power, max_value_power).unwrap();
+                let total = config.total_buckets() as u64;
+                let mut values = vec![0u64, 1, 2, 3, config.max, u64::MAX];
+                for k in 0..64u32 {
+                    let p = 1u64 << k;
+                    values.extend([p - 1, p, p + 1, p + (p >> 1)]);
+                }
+                if config.max < u64::MAX {
+                    values.push(config.max + 1);
+                }
+                values.sort_unstable();
+                let mut previous = 0u64;
+                for value in values {
+                    let index = config.bucket_index(value);
+                    assert!(
+                        index >= previous,
+                        "gp{grouping_power}/max{max_value_power} value {value} not monotone"
+                    );
+                    previous = index;
+                    match reference_index(&config, value) {
+                        Some(expected) => {
+                            assert_eq!(
+                                index, expected as u64,
+                                "gp{grouping_power}/max{max_value_power} value {value}"
+                            );
+                            assert_eq!(config.value_to_index(value), Ok(expected));
+                        }
+                        None => {
+                            assert!(
+                                index >= total,
+                                "gp{grouping_power}/max{max_value_power} value {value} indexed {index} inside {total} buckets"
+                            );
+                            assert_eq!(config.value_to_index(value), Err(Error::OutOfRange));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

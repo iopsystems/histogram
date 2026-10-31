@@ -93,8 +93,16 @@ macro_rules! define_histogram {
             /// arithmetic on overflow.
             #[inline]
             pub fn add(&mut self, value: u64, count: $count) -> Result<(), Error> {
-                let index = self.config.value_to_index(value)?;
-                self.buckets[index] = self.buckets[index].wrapping_add(count);
+                // The counter slice is exactly `total_buckets()` long (every
+                // constructor checks this), and `bucket_index` lands at or past
+                // its end for any value above the maximum, so the slice lookup
+                // is the range check; no separate maximum test is needed.
+                let index = self.config.bucket_index(value);
+                let bucket = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| self.buckets.get_mut(i))
+                    .ok_or(Error::OutOfRange)?;
+                *bucket = bucket.wrapping_add(count);
                 Ok(())
             }
 
