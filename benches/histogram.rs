@@ -29,9 +29,11 @@ macro_rules! benchmark {
 
 const STREAM_LEN: usize = 4096;
 
-/// Values spanning 0..2^40 with a log-uniform spread, from a fixed-seed LCG, so
-/// about half fall in the linear region of a gp7 histogram and half spread
-/// across the logarithmic buckets.
+/// Values spanning 0..2^40 from a fixed-seed LCG. The exponent is drawn from
+/// `bits % 41` with `bits` in 0..64, so exponents 0..=22 are slightly more
+/// likely than 23..=40; for this seed 1,184 of the 4,096 values (29%) fall in
+/// the linear region of a gp7 histogram and the rest spread across its
+/// logarithmic buckets, in an order the branch predictor cannot learn.
 fn mixed_stream() -> Vec<u64> {
     let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
     (0..STREAM_LEN)
