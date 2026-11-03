@@ -239,6 +239,36 @@ impl Config {
         ((s as u64) << self.grouping_power) + (value >> s)
     }
 
+    /// The bucket index the atomic histograms record with:
+    /// [`log_bin_bucket_index`](Self::log_bin_bucket_index) on x86_64,
+    /// [`bucket_index`](Self::bucket_index) elsewhere. Both return the same
+    /// index, and the range-check contract is that of `bucket_index`.
+    ///
+    /// The forms are kept separate for throughput: with `log_bin_bucket_index`,
+    /// atomic recording was 1.02x to 1.15x faster on AMD Zen 1 and Zen 2 and up
+    /// to 26% slower on Apple M3 Ultra. Re-measure both before merging them.
+    #[inline]
+    pub(crate) fn atomic_bucket_index(&self, value: u64) -> u64 {
+        if cfg!(target_arch = "x86_64") {
+            self.log_bin_bucket_index(value)
+        } else {
+            self.bucket_index(value)
+        }
+    }
+
+    /// The same index as [`bucket_index`](Self::bucket_index), computed as
+    /// `lower_bin_count + log_bin * upper_bin_divisions + offset` in `u64`.
+    #[inline]
+    pub(crate) fn log_bin_bucket_index(&self, value: u64) -> u64 {
+        if value < self.cutoff_value {
+            return value;
+        }
+        let power = 63 - value.leading_zeros();
+        let log_bin = (power - self.cutoff_power as u32) as u64;
+        let offset = (value - (1 << power)) >> (power - self.grouping_power as u32);
+        self.lower_bin_count as u64 + log_bin * self.upper_bin_divisions as u64 + offset
+    }
+
     /// Converts a value to a bucket index. Returns an error if the value is
     /// outside of the range for the config.
     #[inline]
@@ -349,6 +379,16 @@ mod tests {
                 let mut previous = 0u64;
                 for value in values {
                     let index = config.bucket_index(value);
+                    assert_eq!(
+                        config.log_bin_bucket_index(value),
+                        index,
+                        "gp{grouping_power}/max{max_value_power} value {value} log-bin form"
+                    );
+                    assert_eq!(
+                        config.atomic_bucket_index(value),
+                        index,
+                        "gp{grouping_power}/max{max_value_power} value {value} atomic form"
+                    );
                     assert!(
                         index >= previous,
                         "gp{grouping_power}/max{max_value_power} value {value} not monotone"

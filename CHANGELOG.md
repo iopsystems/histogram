@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- On x86_64, `AtomicHistogram` and `AtomicHistogram32` compute the bucket
+  index in `add` and `increment` as `lower_bin_count + log_bin *
+  upper_bin_divisions + offset` in `u64`, the form used before 1.6.4, and
+  keep the counter slice's bounds check as the range check. On other
+  targets, and in `Histogram` and `Histogram32` everywhere, the 1.6.4 form
+  is unchanged. Results and errors are unchanged.
+
+  Single-thread recording throughput of the atomic path, as two ratios:
+  1.6.4 over 1.6.3, and the pre-1.6.4 form over the 1.6.4 form. Grouping
+  powers 3, 7 and 12; values uniform in 50,000..150,000 and log-uniform over
+  1..2^40; median of 5 interleaved 2-second runs per cell. The atomic path
+  is both a `histogram::AtomicHistogram` used directly and one shared
+  metriken `AtomicCounterHistogram`.
+
+  | Host | 1.6.4 / 1.6.3 | Pre-1.6.4 form / 1.6.4 form |
+  | --- | --- | --- |
+  | AMD Threadripper 1950X (Zen 1), VM | 0.95 to 0.97 | 1.03 to 1.06 |
+  | AMD Threadripper 3970X (Zen 2), VM | 0.88 to 0.97 | 1.02 to 1.15 |
+  | AMD Ryzen 7 7840HS (Zen 4) | 0.99 to 1.04 | 0.97 to 1.03 |
+  | Raspberry Pi 4 (Cortex-A72) | 0.94 to 1.09 | 0.95 to 1.02 |
+  | Raspberry Pi 5 (Cortex-A76) | 1.04 to 1.09 | 0.95 to 1.02 |
+  | Apple M3 Ultra | 1.17 to 1.26 | 0.74 to 0.96 |
+
+  On Zen 4 the pre-1.6.4 form was 1.00x to 1.03x on the direct
+  `AtomicHistogram` and 0.97x to 1.01x on the shared metriken histogram. On
+  the Pi 4, 1.6.4 was 1.03x to 1.09x of 1.6.3 on the direct histogram and
+  0.94x to 0.99x on the shared one. The aarch64 rows are why the pre-1.6.4
+  form is limited to x86_64. `Histogram` throughput was the same with either
+  index form on every host (0.986 to 1.013); its code is identical in the
+  two builds, so it serves as the control.
+
+  The 1.6.4 entry's statement that the atomic histogram was unchanged was
+  measured on one Intel host (Core i5-13500H). It does not hold on Zen 1 or
+  Zen 2. This change has not been measured on Intel.
+
 ## [1.6.4] - 2026-10-31
 
 ### Changed
