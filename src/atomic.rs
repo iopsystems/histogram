@@ -46,8 +46,8 @@ macro_rules! define_atomic_histogram {
             #[inline]
             pub fn add(&self, value: u64, count: $count) -> Result<(), Error> {
                 // The slice must have exactly `config.total_buckets()` entries for
-                // this lookup to enforce the value range; see `Config::bucket_index`.
-                let index = self.config.bucket_index(value);
+                // this lookup to enforce the value range; see `Config::atomic_bucket_index`.
+                let index = self.config.atomic_bucket_index(value);
                 let bucket = usize::try_from(index)
                     .ok()
                     .and_then(|i| self.buckets.get(i))
