@@ -151,7 +151,7 @@
 //! ```
 //!
 //! # Background
-//! Please see: <https://h2histogram.org>
+//! Please see: <https://h2histogram.org/design/>
 
 mod atomic;
 mod bucket;

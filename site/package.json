@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "notebooks preview --root src --template src/template.html",
-    "build": "notebooks build --root src --out ../dist --empty --template src/template.html -- src/index.html"
+    "build": "notebooks build --root src --out ../dist --empty --template src/template.html -- src/*/index.html && node postbuild.mjs"
   },
   "dependencies": {
     "@observablehq/notebook-kit": "^1.5.2"
