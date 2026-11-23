@@ -1,0 +1,156 @@
+<!doctype html>
+<notebook theme="air">
+  <title>Histogram Design Comparison</title>
+
+  <script type="text/html">
+    <style>
+      :root { --max-width: 1100px; }
+      p, h1, h2, h3, h4, h5, h6, table, figure, figcaption, .katex-display { max-width: 760px; }
+      blockquote, ul, ol { max-width: 720px; }
+      table { width: 100%; }
+      td small { color: var(--theme-foreground-muted); }
+      /* Long variant names don't wrap; on narrow screens scroll the table, not the page. */
+      @media (max-width: 640px) { table { display: block; overflow-x: auto; } }
+    </style>
+  </script>
+
+  <script type="text/markdown">
+    # Histogram Design Comparison
+
+    This page compares h2histogram with other histogram designs that, like it, fix their error bound by configuration before any data arrive. Only then does a percentile mean the same thing across time windows and workloads. Eight designs meet that rule, h2histogram included.
+
+    Each section summarizes one design, then lists its variants and how each serves the [three stages](../principles/#the-life-cycle-of-a-histogram) of a histogram's life: Update (record), Report (snapshot and export), Analyze (merge, transform, query). Twelve designs that don't meet the rule, and what each is still good for, are listed under [Rejected designs](#rejected-designs).
+
+    ## h2histogram
+
+    The reference design: base-2 log-linear buckets set by `grouping_power` (relative error 2<sup>−gp</sup>) and `max_value_power`. Values below 2<sup>gp+1</sup> get exact width-1 buckets; above that, each power of two splits into 2<sup>gp</sup> buckets, so the index is a few shifts. It separates the recorder from read-only snapshot forms, so each stage gets its own representation. [Crate](https://github.com/iopsystems/histogram) · [Design notes](../design/) · [Reference](../references/#h2histogram)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | Histogram<br><small>(dense, u64)</small> | Default recorder | All stages supported |
+    | Histogram32<br><small>(dense, u32)</small> | Half-width counters | All stages supported |
+    | AtomicHistogram<br><small>(u32/u64)</small> | Atomic counters | All stages supported |
+    | SparseHistogram | Occupied buckets only | Update unsupported |
+    | CumulativeROHistogram<br><small>(u32/u64)</small> | Prefix sums | Update unsupported |
+
+    All variants share one Config, so merges are exact whenever grouping_power and max_value_power match.
+
+    ## HdrHistogram
+
+    The oldest widely ported design (Gil Tene, 2012): base-2 log-linear buckets sized by a value range and 1–5 significant decimal digits. Its variants are the richest of any design, and its Recorder is the clearest built-in for interval-based reporting. Variant names below are from the Java reference; the Rust port, which we benchmarked, has fewer. [Site](https://hdrhistogram.github.io/HdrHistogram/) · [Java](https://github.com/HdrHistogram/HdrHistogram) · [Rust](https://docs.rs/hdrhistogram/) · [Reference](../references/#hdrhistogram)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | Histogram<br>IntCountsHistogram<br>ShortCountsHistogram | Counter width | All stages supported |
+    | AtomicHistogram | Atomic counters | All stages supported |
+    | ConcurrentHistogram<br>SynchronizedHistogram | Concurrent writers | All stages supported |
+    | PackedHistogram<br>PackedConcurrentHistogram | Packed counters | All stages supported |
+    | DoubleHistogram | Float values | All stages supported |
+    | Recorder<br>SingleWriterRecorder | Interval swap | Analyze unsupported |
+    | HistogramLogWriter<br><small>(V2 encoding)</small> | Compressed logs | Update unsupported |
+    | SyncHistogram + Recorder<br><small>(Rust)</small> | Per-thread recorders | All stages supported |
+
+    The packed variant we benchmarked in Rust lacks native merge and reset; the Java PackedHistogram supports both.
+
+    No variant changes precision after creation, so downsampling for long-term storage means re-bucketing outside the library.
+
+    ## OpenHistogram (circllhist)
+
+    One fixed geometry for everyone: bins are values with two significant decimal digits times a power of ten (1.0, 1.1 … 9.9, 10, 11 …), giving at most 10% relative error. With no configuration, any two histograms from any source merge exactly; the trade is no precision knob, so it can be compared with h2histogram at only one setting, grouping_power 4. [Paper](https://arxiv.org/abs/2001.06561) · [libcircllhist](https://github.com/openhistogram/libcircllhist) · [Go](https://github.com/openhistogram/circonusllhist) · [Reference](../references/#openhistogram)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | Standard histogram<br><small>(C)</small> | Sparse bins | All stages supported |
+    | Fast-index histogram<br><small>(C)</small> | Index lookup tables | All stages supported |
+    | circonusllhist<br><small>(Go)</small> | Optional lookup tables | All stages supported |
+    | Bindings<br><small>(Python, Lua, JS, Java)</small> | Other runtimes | All stages supported |
+
+    ## DDSketch, non-collapsing
+
+    A sketch built from two independent choices: a mapping from value to bin index, and a store that holds the counts. Relative accuracy α is guaranteed for every quantile as long as the store never collapses, and signed floating-point values are native (separate positive and negative stores plus a zero count). Only the non-collapsing stores meet the rule; collapsing stores are [rejected](#rejected-designs). [Paper](https://www.vldb.org/pvldb/vol12/p2195-masson.pdf) · [Java](https://github.com/DataDog/sketches-java) · [Go](https://github.com/DataDog/sketches-go) · [Saluki](https://github.com/DataDog/saluki) · [Reference](../references/#ddsketch)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | LogarithmicMapping | Exact log index | All stages supported |
+    | LinearlyInterpolatedMapping<br>QuadraticallyInterpolatedMapping<br>CubicallyInterpolatedMapping<br><small>(Java, Go)</small> | Approximate log index | All stages supported |
+    | Unbounded dense store | Contiguous bins | All stages supported |
+    | Sparse store<br><small>(BTreeMap in Saluki)</small> | Occupied bins only | All stages supported |
+    | Protobuf serialization | Shared wire format | Update unsupported |
+
+    There is no native downsampling: changing α means re-mapping bins, which is lossless only when the new gamma is a power of the old one.
+
+    ## OpenTelemetry exponential histogram
+
+    A data model more than a library: bucket boundaries are powers of base = 2<sup>2<sup>−scale</sup></sup>, so lowering the scale by one merges adjacent bucket pairs with no new error (OTEP 149's "perfect subsetting"). That makes it the strongest Analyze-stage design for downsampling. It meets the rule only at a fixed scale; the SDK's default adaptive scale is rejected. [OTEP 149](https://github.com/open-telemetry/oteps/blob/main/text/0149-exponential-histogram.md) · [Data model](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram) · [Rust SDK](https://github.com/open-telemetry/opentelemetry-rust) · [Reference](../references/#otel-exponential)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | OTLP data point | The representation | Update unsupported |
+    | SDK aggregation, fixed scale<br><small>(meets the rule)</small> | Fixed scale | Analyze unsupported |
+    | SDK aggregation, adaptive<br><small>(rejected)</small> | Data-driven scale | Analyze unsupported |
+    | Delta temporality | Per-interval export | Update unsupported |
+    | Cumulative temporality | Since-start export | Update unsupported |
+
+    Temporality is the [choice](../principles/#cumulative-view-or-time-slice) between a free-running histogram (cumulative) and interval-based histograms (delta). OpenTelemetry makes that choice per exporter, not per histogram.
+
+    ## Prometheus native histograms
+
+    The same base-2 bucket math as OpenTelemetry (schema −4 to 8 equals OTel scale), with Prometheus's own client recorder, pull-based scrape and TSDB storage. It is the main production example of the [pattern that suits pull-based observability](../principles/#cumulative-view-or-time-slice): a free-running cumulative histogram read by an external puller. Stable since Prometheus v3.8.0 (Dec 2025). [Spec](https://prometheus.io/docs/specs/native_histograms/) · [client_golang](https://github.com/prometheus/client_golang) · [Reference](../references/#prometheus-native)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | Standard schemas, fixed resolution<br><small>(meets the rule)</small> | No bucket limit | All stages supported |
+    | Standard schemas, max bucket count | Bucket limit | All stages supported |
+    | Zero bucket | Shared bucket near zero | All stages supported |
+    | Integer histograms<br>Float histograms | Count type | Update unsupported |
+    | Custom buckets<br><small>(NHCB, schema −53)</small> | Explicit bounds | All stages supported |
+
+    We have not yet benchmarked a Rust client.
+
+    ## hg64 / isc_histo
+
+    The closest independent relative of h2histogram: 64-bit unsigned values, a base-2 exponent plus `sigbits` of linear mantissa, built for timing statistics in the BIND DNS server. Memory grows with the range of values seen, not the number of records, because chunks are allocated on first use. Finch reports under 2.5 ns per in-cache, uncontended update. We have not benchmarked it yet. [hg64](https://github.com/fanf2/hg64) · [Blog post](https://dotat.at/@/2022-07-15-histogram.html) · [isc_histo MR](https://gitlab.isc.org/isc-projects/bind9/-/merge_requests/7696) · [Reference](../references/#hg64)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | hg64<br><small>(prototype)</small> | Standalone C library | All stages supported |
+    | isc_histo_t | Thread-safe counters | All stages supported |
+    | isc_histomulti_t | Per-thread shards | All stages supported |
+
+    A head-to-head with h2histogram would isolate one question: lazy chunked allocation versus a preallocated dense array.
+
+    ## DynaHist
+
+    A Java library (Otmar Ertl, Dynatrace) that treats bucket layout as a pluggable choice, configured by an absolute and a relative bin-width limit over a value range that can include negatives. Its static/dynamic/preprocessed split mirrors h2histogram's recorder-versus-snapshot split. It is Java only, and we have not benchmarked it. [Repo](https://github.com/dynatrace-oss/dynahist) · [Blog post](https://engineering.dynatrace.com/blog/summarizing-high-frequency-latency-measurements-with-strict-error-guarantees/) · [Reference](../references/#dynahist)
+
+    | Variant | What it changes | Support |
+    | --- | --- | --- |
+    | LogLinearLayout | Linear log approximation | All stages supported |
+    | LogQuadraticLayout | Quadratic log approximation | All stages supported |
+    | LogOptimalLayout | Exact log bounds | All stages supported |
+    | Static histogram | Preallocated array | All stages supported |
+    | Dynamic histogram | Growing array | All stages supported |
+    | Preprocessed histogram | Read-optimized | Update unsupported |
+
+    ## Rejected designs
+
+    Twelve designs or configurations are left out, for one of three reasons: no error bound fixed by configuration before data arrive (the rule above), error measured in rank rather than value, or no role beyond a single stage.
+
+    Items are grouped by the reason for rejection. Each name links to its entry in the [reference list](../references/).
+
+    - **[DDSketch, collapsing stores](../references/#ddsketch).** Error becomes unbounded once the store collapses. Still useful for hard memory caps where low quantiles don't matter.
+    - **[OTel exponential, SDK adaptive scale](../references/#otel-exponential).** The error bound depends on the data's range. Still useful for zero-configuration instrumentation.
+    - **[UDDSketch](../references/#uddsketch).** The error bound depends on the data's range. Still useful for fixed-memory sketches whose bound degrades predictably.
+    - **[Prometheus classic histogram](../references/#prometheus-classic).** Error is unbounded within user-chosen buckets. Still useful for fixed SLO thresholds known in advance.
+    - **[OTel explicit-bucket histogram](../references/#otel-explicit).** Error is unbounded within user-chosen buckets. Still useful for compatibility with existing dashboards.
+    - **[t-digest](../references/#t-digest).** It has no value error bound, and results depend on insertion order. Still useful for very small summaries with good tail rank accuracy.
+    - **[Greenwald–Khanna (GK)](../references/#gk).** It bounds rank error, not value error. Still useful for exact rank guarantees on a single stream.
+    - **[KLL](../references/#kll).** Its rank error is probabilistic, and it bounds rank rather than value. Still useful for mergeable rank-accurate sketches, as in Apache DataSketches.
+    - **[ReqSketch](../references/#reqsketch).** Its rank error is probabilistic, and it bounds rank rather than value. Still useful for tail rank accuracy without fixed value ranges.
+    - **[Moments sketch](../references/#moments-sketch).** It has no buckets and no value error bound. Still useful for very high-cardinality aggregation where tiny size matters most.
+    - **[Linux ftrace hist triggers (.log2, .buckets)](../references/#ftrace).** They cover only the Update stage, with no export or merge. Still useful for ad-hoc kernel investigation, and as a reference point for the [most stringent runtime](../principles/#the-most-stringent-runtime): kernel hot paths.
+    - **[bpftrace hist() / hist(n, k)](../references/#bpftrace).** It covers only the Update stage, with no export or merge. Still useful as evidence that log-linear indexing is cheap enough for kernel hot paths.
+
+    The last two items have bounded geometry; they are excluded because they cover only the Update stage, not because they fail the rule.
+  </script>
+</notebook>

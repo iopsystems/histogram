@@ -1,0 +1,101 @@
+<!doctype html>
+<notebook theme="air">
+  <title>In Pursuit of the Fastest Histogram</title>
+
+  <script type="text/html">
+    <style>
+      :root { --max-width: 1100px; }
+      p, h1, h2, h3, h4, h5, h6, hr, table, figure, figcaption, .katex-display { max-width: 760px; }
+      blockquote, ul, ol { max-width: 720px; }
+    </style>
+  </script>
+
+  <script type="text/markdown">
+    # In Pursuit of the Fastest Histogram
+
+    I've been trying to create the world's fastest histogram, at least for the use cases I care about. This article collects what I learned along the way and where I ended up.
+
+    Most of us understand that histograms can represent the distribution of quantitative data, such as request latencies. Far fewer people realize that histograms are used very differently depending on the context. When we track the distribution of latencies for a single API endpoint as requests are served, we are mostly writing, or recording, quantities. When we try to understand that distribution, we are extracting statistical summaries from recorded data. And when we move recorded values to where that analysis happens, we take snapshots. Each of these operations accesses what we call "a histogram" in a distinct way.
+
+    As it turns out, a histogram design that works really well for one type of access may perform far from ideally for another. More often than not, the content of a histogram travels a long distance from where it originates to where it is most useful. So before judging any design, we need to understand the life cycle of a histogram, and what each phase asks of it.
+
+    ## The life cycle of a histogram
+
+    A histogram passes through three stages, each with its own access pattern.
+
+    1. **Update.** When we put a histogram into a running process, say to record the latency distribution of requests hitting the main API, we add one number each time a task finishes. This can happen millions of times a second inside a single service instance or process.
+    2. **Report.** Every once in a while, we want to know what kind of distribution we have been getting. Reporting takes a snapshot of the histogram and sends it to a destination, often outside the environment where the recording happens. It is the bridge between the world of action and the world of reflection.
+    3. **Analyze.** Reported values are often combined, compressed, or transformed to answer specific questions, at a location completely separate from where the histogram was created. The same values may be visited and revisited many times, over a long period, for different purposes.
+
+    The rest of this article takes each stage in turn and asks what a good histogram design looks like for it.
+
+    ## Update: design principles for live histograms
+
+    What sets the Update stage apart from the rest is that it is write-dominated, especially in telemetry use cases. The cost of recording values in a running service is paid mainly in compute and memory footprint, two resources the rest of the service is often hungry for.
+
+    ### Memory footprint
+
+    It is easy to see why memory can become a problem if we imagine tracking a distribution without a histogram at all. If every value is recorded as-is, memory grows linearly with the number of records, which can consume a lot of memory or storage in a high-throughput system. Fundamentally, a histogram trades full accuracy for space efficiency, typically through compression that guarantees bounded (relative) error.
+
+    The universal pattern in histogram design is a set of buckets, each corresponding to a range of values. Most histograms intended for services handle the trade-off between range and space with some flavor of exponential scale, and for good reason: many distributions in computer systems have long tails, far above the median. That trait is typical of queuing networks, and computer systems are full of interconnected queues.
+
+    ### Compute overhead
+
+    Compute overhead has more nuance, even though conceptually all we need to do is increment the count in the right bucket. Recording a value has two steps: looking up the bucket's offset or address, then updating the count at that address.
+
+    If another thread can resize the histogram dynamically, some form of hardware or software lock is almost unavoidable, which makes the lookup cost unbounded. Similarly, if updates must be thread-safe, they too can take unbounded time. After contention, the memory hierarchy comes into focus. A design that needs a search or scan to locate the address can require multiple round trips to memory, and every read becomes sensitive to cache locality.
+
+    ### The most stringent runtime
+
+    Now suppose we must design a histogram for the most demanding environment, such as the hot paths of kernel functions called millions of times per second. The wiggle room shrinks dramatically, and the design principles almost write themselves, because we are forced to drop anything that can be avoided:
+
+    - No unbounded operations, which means a fixed-size histogram with no locks that could spin.
+    - No binary search or other pointer-chasing algorithm for bucket lookup.
+    - The remaining cycles shaved off through heavily optimized numeric operations.
+
+    ## Report: design principles for getting values out
+
+    "How do we get information out?" is the key question for the Report stage. It is about structured ways of reading from a histogram, often while it is still recording.
+
+    We can categorize reporting along two dimensions. First, are we reading the histogram wholesale, or generating summary statistics? Second, do we want a cumulative view, or a snapshot of a particular slice of time?
+
+    ### Wholesale export or summary statistics
+
+    The first dimension decides which functions or APIs the histogram must provide for reporting. A full export requires scanning all buckets, possibly capturing how the histogram was configured, and serializing everything according to a well-documented spec. Useful summary statistics, on the other hand, usually come as `min`, `max`, `mean`, `stddev`, and user-specified quantiles. Computing them often requires scanning all buckets too, but the output is much smaller, and serialization is either optional (when used internally) or minimal.
+
+    ### Cumulative view or time slice
+
+    The second dimension turns out to be contextual and nuanced, depending on how the histogram is deployed. Favoring one view makes the other a derived artifact. With a "free-running" histogram, we take snapshots at the start and end of an interval and compute the delta to get a time-slice histogram. With interval-based histograms, we periodically switch recording to a new instance, and sum several instances to cover a longer duration. Neither is intrinsically better, but for observability driven by external pulls, keeping free-running histograms internally probably makes more sense.
+
+    ### Recording versus reporting
+
+    In an online service, reporting puts pressure on recording much the way garbage collection puts pressure on normal processing: necessary, but potentially disruptive. With histograms, though, there is far more room to negotiate.
+
+    Reporting a histogram's state atomically is conceptually desirable, but often the wrong trade-off. A histogram is a composite, relatively large data structure. More importantly, it is already an approximation of the quantities it tracks. Allowing small time skews across buckets during reporting distorts the distribution only slightly, often well within the relative error built into the bucket configuration. By letting different parts of a histogram be read at slightly different times without holding a lock, recording performance can be dramatically better.
+
+    ## Analyze: design principles for working with histograms
+
+    The Analyze stage is where all the hard work of designing a good histogram finally pays off. There is no need to predict which quantile we care about, or what a threshold should be: either can be decided at query time, with values or ranks returned within a well-understood error bound. Anybody, from business analysts to on-call engineers, should feel free to query histograms to their hearts' content.
+
+    ### Aggregation without losing fidelity
+
+    These niceties matter even more in a distributed system. Recall one of the most cringe-worthy observability sins, summed up in a single action: averaging p99 latencies across a group of instances. Before histogram support became common, engineers faced a tough choice: stare at a dizzying number of values from every source, or aggregate them in a way that isn't statistically meaningful. Common operators such as the mean tend to wash out exceptional values, leaving engineers chasing what looks like a ghost of an outlier hidden in plain sight.
+
+    Histograms promise to shine a light on that statistical ghost by resolving the dilemma between aggregation and fidelity. But not every histogram design is compatible with merging. If histograms are created with buckets that don't line up, merging may be impossible, which complicates any analysis across multiple data sources. Generally, histograms designed and configured for lossless, exact merges are the easiest to use, especially for observability.
+
+    Another common analytics operation is compression. Once guided by concrete questions, it finally becomes reasonable to down-sample histograms heavily into leaner sketches for long-term storage.
+
+    ### What the Analyze stage asks for
+
+    Extracting summary statistics, merging, and reconfiguring are the dominant operations in this stage. The desirable properties are:
+
+    - A bucket design that supports adjustable granularity.
+    - Well-aligned bucket boundaries that make merging and down-sampling easy.
+    - Fast scans and summary statistics.
+    - A small storage footprint at rest.
+
+    ---
+
+    **Next:** [The h2histogram design](../design/)
+  </script>
+</notebook>
