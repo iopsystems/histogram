@@ -1,0 +1,57 @@
+<!doctype html>
+<notebook theme="air">
+  <title>Histogram Designs: Reference List</title>
+
+  <script type="text/html">
+    <style>
+      :root { --max-width: 1100px; }
+      p, h1, h2, h3, h4, h5, h6, table, figure, figcaption, .katex-display { max-width: 760px; }
+      blockquote, ul, ol { max-width: 720px; }
+      ol > li + li { margin-top: 0.75rem; }
+    </style>
+  </script>
+
+  <script type="text/markdown">
+    # Histogram Designs: Reference List
+
+    A list of histogram designs and implementations.
+
+    ## References
+
+    1. [**bpftrace hist() / hist(n, k)**](https://github.com/bpftrace/bpftrace). Rizzo, L., and bpftrace maintainers. *hist: log2 histograms with finer granularity*. [bpftrace PR #2831](https://github.com/iovisor/bpftrace/pull/2831), released in v0.20.0, January 2024. Code: [bpftrace](https://github.com/bpftrace/bpftrace) · [lr-cstats](https://github.com/luigirizzo/lr-cstats).
+
+    1. [**DDSketch**](https://www.vldb.org/pvldb/vol12/p2195-masson.pdf). Masson, C., Rim, J. E., Lee, H. K. *DDSketch: A Fast and Fully-Mergeable Quantile Sketch with Relative-Error Guarantees*. PVLDB 12(12): 2195–2205, 2019. [arXiv:1908.10693](https://arxiv.org/abs/1908.10693). Code: [Java](https://github.com/DataDog/sketches-java) · [Go](https://github.com/DataDog/sketches-go) · [Python](https://github.com/DataDog/sketches-py) · [JavaScript](https://github.com/DataDog/sketches-js) · [.NET](https://github.com/DataDog/sketches-dotnet) · [Rust (Saluki)](https://github.com/DataDog/saluki/tree/main/lib/ddsketch) · [Ruby (archived)](https://github.com/DataDog/ddsketch-ruby).
+
+    1. [**DynaHist**](https://github.com/dynatrace-oss/dynahist). Ertl, O. *[Summarizing high-frequency latency measurements with strict error guarantees](https://engineering.dynatrace.com/blog/summarizing-high-frequency-latency-measurements-with-strict-error-guarantees/)*. Dynatrace Engineering blog, March 2021. Code: [Java](https://github.com/dynatrace-oss/dynahist).
+
+    1. [**Greenwald–Khanna (GK)**](https://doi.org/10.1145/375663.375670). Greenwald, M., Khanna, S. *Space-Efficient Online Computation of Quantile Summaries*. SIGMOD 2001: 58–66.
+
+    1. [**h2histogram**](../design/). IOP Systems. *[H2Histogram: Base-2 Redesign of HdrHistogram for Unbeatable Performance](../design/)*. Code: [Rust](https://github.com/iopsystems/histogram) · [Go](https://github.com/iopsystems/h2histogram-go) · [Java](https://github.com/iopsystems/h2histogram-java) · [JavaScript](https://github.com/iopsystems/h2histogram-js) · [Python](https://github.com/iopsystems/h2histogram-py) · [C (alpha)](https://github.com/iopsystems/h2histogram-c) · [Zig (alpha)](https://github.com/iopsystems/h2histogram-zig).
+
+    1. [**HdrHistogram**](https://hdrhistogram.github.io/HdrHistogram/). Tene, G. *HdrHistogram: A High Dynamic Range Histogram*. 2012. Code: [Java](https://github.com/HdrHistogram/HdrHistogram) · [C](https://github.com/HdrHistogram/HdrHistogram_c) · [.NET](https://github.com/HdrHistogram/HdrHistogram.NET) · [JavaScript](https://github.com/HdrHistogram/HdrHistogramJS) · [Python](https://github.com/HdrHistogram/HdrHistogram_py) · [Erlang](https://github.com/HdrHistogram/hdr_histogram_erl) · [Rust](https://github.com/HdrHistogram/HdrHistogram_rust) · [Go](https://github.com/HdrHistogram/hdrhistogram-go) · [Swift](https://github.com/HdrHistogram/hdrhistogram-swift).
+
+    1. [**hg64 / isc_histo**](https://github.com/fanf2/hg64). Finch, T. *[hg64: a 64-bit histogram](https://dotat.at/@/2022-07-15-histogram.html)*. Blog post, July 2022; [BIND issue #3464](https://gitlab.isc.org/isc-projects/bind9/-/issues/3464). Code: [C (hg64)](https://github.com/fanf2/hg64) · [C (BIND isc_histo)](https://gitlab.isc.org/isc-projects/bind9/-/blob/main/lib/isc/histo.c).
+
+    1. [**KLL**](https://arxiv.org/abs/1603.05346). Karnin, Z., Lang, K., Liberty, E. *Optimal Quantile Approximation in Streams*. FOCS 2016. [arXiv:1603.05346](https://arxiv.org/abs/1603.05346). Code (Apache DataSketches): [Java](https://github.com/apache/datasketches-java) · [C++](https://github.com/apache/datasketches-cpp) · [Python](https://github.com/apache/datasketches-python) · [Go](https://github.com/apache/datasketches-go) · [Rust](https://github.com/apache/datasketches-rust).
+
+    1. [**Linux ftrace hist triggers**](https://docs.kernel.org/trace/histogram.html). Zanussi, T.; Rostedt, S. *Event Histograms* (Linux kernel documentation). Linux 4.7, 2016; [.buckets modifier](https://lore.kernel.org/all/20210707142834.1e16f335@oasis.local.home/T/), 2021. Code: [kernel/trace/trace_events_hist.c](https://github.com/torvalds/linux/blob/master/kernel/trace/trace_events_hist.c).
+
+    1. [**Moments sketch**](https://arxiv.org/abs/1803.01969). Gan, E., Ding, J., Tai, K. S., Sharan, V., Bailis, P. *Moment-Based Quantile Sketches for Efficient High Cardinality Aggregation Queries*. VLDB 2018. [arXiv:1803.01969](https://arxiv.org/abs/1803.01969). Code: [Java](https://github.com/stanford-futuredata/momentsketch).
+
+    1. [**OpenHistogram (circllhist)**](https://arxiv.org/abs/2001.06561). Hartmann, H., Schlossnagle, T. *Circllhist: A Log-Linear Histogram Data Structure for IT Infrastructure Monitoring*. [arXiv:2001.06561](https://arxiv.org/abs/2001.06561), 2020. Code: [C, with Python and Lua bindings](https://github.com/openhistogram/libcircllhist) · [Go](https://github.com/openhistogram/circonusllhist) · [Rust](https://github.com/openhistogram/openhistogram-rs) · [.NET](https://github.com/openhistogram/netcircllhist) · [JavaScript](https://github.com/openhistogram/circllhist.js).
+
+    1. [**OpenTelemetry explicit-bucket histogram**](https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation). OpenTelemetry Metrics SIG. *Explicit Bucket Histogram Aggregation* (Metrics SDK specification). 2022. Code (SDKs): [Go](https://github.com/open-telemetry/opentelemetry-go) · [Java](https://github.com/open-telemetry/opentelemetry-java) · [JavaScript](https://github.com/open-telemetry/opentelemetry-js) · [Python](https://github.com/open-telemetry/opentelemetry-python) · [Ruby](https://github.com/open-telemetry/opentelemetry-ruby) · [C++](https://github.com/open-telemetry/opentelemetry-cpp) · [.NET](https://github.com/open-telemetry/opentelemetry-dotnet) · [Rust](https://github.com/open-telemetry/opentelemetry-rust).
+
+    1. [**OpenTelemetry exponential histogram**](https://github.com/open-telemetry/oteps/blob/main/text/0149-exponential-histogram.md). Zhuge, Y., Ertl, O., MacDonald, J., and the OpenTelemetry Metrics SIG. *OTEP 149: Add Exponential Bucketing to Histogram Protobuf*. 2021. Spec: [data model](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram) · [SDK aggregation](https://opentelemetry.io/docs/specs/otel/metrics/sdk/#base2-exponential-bucket-histogram-aggregation). Code (SDKs): [Go](https://github.com/open-telemetry/opentelemetry-go) · [Java](https://github.com/open-telemetry/opentelemetry-java) · [JavaScript](https://github.com/open-telemetry/opentelemetry-js) · [Python](https://github.com/open-telemetry/opentelemetry-python) · [Ruby](https://github.com/open-telemetry/opentelemetry-ruby) · [C++](https://github.com/open-telemetry/opentelemetry-cpp) · [.NET](https://github.com/open-telemetry/opentelemetry-dotnet) · [Rust](https://github.com/open-telemetry/opentelemetry-rust) · [Go prototypes](https://github.com/jmacd/otlp-expo-histo).
+
+    1. [**Prometheus classic histogram**](https://prometheus.io/docs/practices/histograms/). Prometheus maintainers. *Histograms and Summaries* (Prometheus documentation). Code: [Go](https://github.com/prometheus/client_golang) · [Java](https://github.com/prometheus/client_java) · [Python](https://github.com/prometheus/client_python) · [Ruby](https://github.com/prometheus/client_ruby) · [Rust](https://github.com/prometheus/client_rust).
+
+    1. [**Prometheus native histograms**](https://prometheus.io/docs/specs/native_histograms/). Rabenstein, B., and Prometheus maintainers. *Native Histograms* (Prometheus specification). Experimental in v2.40.0, November 2022; stable in [v3.8.0](https://github.com/prometheus/prometheus/releases/tag/v3.8.0), December 2025. Code: [Prometheus server](https://github.com/prometheus/prometheus) · [Go client](https://github.com/prometheus/client_golang) · [Java client](https://github.com/prometheus/client_java) · [Rust client](https://github.com/prometheus/client_rust).
+
+    1. [**ReqSketch**](https://arxiv.org/abs/2004.01668). Cormode, G., Karnin, Z., Liberty, E., Thaler, J., Veselý, P. *Relative Error Streaming Quantiles*. PODS 2021. [arXiv:2004.01668](https://arxiv.org/abs/2004.01668). Code (Apache DataSketches): [Java](https://github.com/apache/datasketches-java) · [C++](https://github.com/apache/datasketches-cpp) · [Python](https://github.com/apache/datasketches-python) · [Go](https://github.com/apache/datasketches-go) · [Rust](https://github.com/apache/datasketches-rust).
+
+    1. [**t-digest**](https://arxiv.org/abs/1902.04023). Dunning, T., Ertl, O. *Computing Extremely Accurate Quantiles Using t-Digests*. [arXiv:1902.04023](https://arxiv.org/abs/1902.04023), 2019 (library since 2013). Code: [Java (reference)](https://github.com/tdunning/t-digest) · [Python](https://github.com/CamDavidsonPilon/tdigest) · [Go](https://github.com/influxdata/tdigest) · [JavaScript](https://github.com/welch/tdigest) · [C++ (Folly)](https://github.com/facebook/folly/blob/main/folly/stats/TDigest.h) · [C (RedisBloom)](https://github.com/RedisBloom/t-digest-c) · [Rust](https://github.com/MnO2/t-digest) · [Apache DataSketches](https://datasketches.apache.org/).
+
+    1. [**UDDSketch**](https://arxiv.org/abs/2004.08604). Epicoco, I., Melle, C., Cafaro, M., Pulimeno, M., Morleo, G. *UDDSketch: Accurate Tracking of Quantiles in Data Streams*. [IEEE Access](https://ieeexplore.ieee.org/document/9163358/) 8, 2020. [arXiv:2004.08604](https://arxiv.org/abs/2004.08604). Code: [Rust (TimescaleDB Toolkit)](https://github.com/timescale/timescaledb-toolkit) · [Python](https://github.com/jettify/uddsketch-py).
+  </script>
+</notebook>
