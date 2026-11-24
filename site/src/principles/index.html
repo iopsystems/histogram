@@ -13,7 +13,7 @@
   <script type="text/markdown">
     # In Pursuit of the Fastest Histogram
 
-    I've been trying to create the world's fastest histogram, at least for the use cases I care about. This article collects what I learned along the way and where I ended up.
+    We've been trying to create the world's fastest histogram, at least for the use cases we care about. Here is what we have learned along the way.
 
     Most of us understand that histograms can represent the distribution of quantitative data, such as request latencies. Far fewer people realize that histograms are used very differently depending on the context. When we track the distribution of latencies for a single API endpoint as requests are served, we are mostly writing, or recording, quantities. When we try to understand that distribution, we are extracting statistical summaries from recorded data. And when we move recorded values to where that analysis happens, we take snapshots. Each of these operations accesses what we call "a histogram" in a distinct way.
 
